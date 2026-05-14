@@ -1,8 +1,8 @@
 # 🤖 AgentRoot
 
-> **The open-source Claude Code killer.**  
-> Your private, extensible AI coworker that lives in your repo.  
-> **Bring Your Own Key (BYOK)** • Fully local-first • Multi-agent • Infinite personas.
+> **The open-source local Claude Code.**  
+> Run any Ollama model, any Hugging Face model, or bring your own cloud keys.  
+> Fully private • Multi-agent • Infinite personas • Built for developers who want control.
 
 <p align="center">
   <a href="https://github.com/joecapella/agentroot/stargazers"><img src="https://img.shields.io/github/stars/joecapella/agentroot?style=social" alt="Stars"></a>
@@ -12,59 +12,93 @@
   <a href="https://github.com/joecapella/agentroot/issues"><img src="https://img.shields.io/github/issues/joecapella/agentroot?style=flat-square" alt="Issues"></a>
   <img src="https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=next.js" alt="Next.js">
   <img src="https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Ollama-supported-green?style=flat-square&logo=ollama" alt="Ollama">
 </p>
 
 <p align="center">
-  <b>The next-generation AI pair programmer that actually respects your privacy and your stack.</b><br>
-  <i>Claude Code was the beginning. AgentRoot is the revolution.</i>
+  <b>The first truly local, fully open-source Claude Code alternative.</b><br>
+  <i>Claude Code was the beginning. AgentRoot is what comes next — on your machine, your models, your rules.</i>
 </p>
 
 ---
 
-## 🔥 Why AgentRoot?
+## 🔥 Why AgentRoot Wins for Local-First Developers
 
-| Feature                    | Claude Code / Cursor       | Aider / Devin             | **AgentRoot**                          |
-|---------------------------|----------------------------|---------------------------|----------------------------------------|
-| **Privacy**               | Cloud-only                 | Local but limited         | ✅ Fully local + BYOK (zero data leak) |
-| **Extensibility**         | Closed                     | Limited                   | ✅ Pluggable agents, custom personas   |
-| **Multi-agent**           | Single model               | Single agent              | ✅ Cofounder + Calculator + your own   |
-| **Persona System**        | Basic                      | None                      | ✅ 5 built-in + infinite custom        |
-| **Tool Safety**           | Ask every time             | Risky                     | ✅ Two-step approval + rollback        |
-| **Memory & Context**      | Session only               | Git only                  | ✅ Persistent facts, projects, memory  |
-| **Open Source**           | ❌                         | ✅                        | ✅ Fully open + welcoming community    |
+| Feature                    | Claude Code / Cursor       | Aider / Devin             | **AgentRoot (Local Mode)**                  |
+|---------------------------|----------------------------|---------------------------|---------------------------------------------|
+| **True Local LLMs**       | ❌ Cloud only              | Limited                   | ✅ Ollama + Hugging Face + any OpenAI-compatible |
+| **Privacy**               | Cloud-only                 | Local but limited         | ✅ 100% local by default, zero telemetry     |
+| **Model Freedom**         | Locked to Anthropic        | Limited                   | ✅ Any model you can run locally or via API  |
+| **Multi-Agent**           | Single model               | Single agent              | ✅ Cofounder + Calculator + your own agents  |
+| **Persona System**        | Basic                      | None                      | ✅ 5 built-in + infinite custom personas     |
+| **Tool Safety**           | Ask every time             | Risky                     | ✅ Two-step approval + full rollback         |
+| **Memory Layer**          | Session only               | Git only                  | ✅ Persistent facts, projects, rollback      |
+| **Fully Open Source**     | ❌                         | ✅                        | ✅ MIT licensed + welcoming community        |
 
-**AgentRoot isn't just another wrapper.**  
-It's a full-stack AI development platform you can fork, extend, and run on your laptop today.
+**This is the real deal.**  
+A complete, production-grade, local-first AI coding platform you can fork today.
 
-## ✨ Killer Features
+## ✨ Killer Local-First Features
 
-- 🧠 **CofounderAgent** — Your always-on strategic partner with LangGraph state machines
-- 🎭 **Infinite Personas** — Brand Designer, Code Assistant, Ops Agent, Vision Agent, and you can add your own in 2 minutes
-- 🔑 **True BYOK** — Your API keys, your models, your cost, your privacy
-- 🛡️ **Safe Tools** — Only `open_url` and `create_todo` enabled by default. Everything else requires explicit approval
-- 🧩 **Pluggable Architecture** — Drop in new Python agents or TypeScript tools in minutes
-- 📊 **Built-in Memory Layer** — Persistent facts, project workspaces, rollback snapshots
-- ⚡ **Next.js 15 + Foundry** — Blazing fast UI powered by Microsoft Foundry hosted agents
+- 🦙 **Ollama Native** — Run `llama3`, `codellama`, `deepseek-coder`, `qwen2.5-coder` etc. with zero config
+- 🤗 **Hugging Face Support** — Drop in any GGUF model or use the HF Hub directly
+- 🎭 **Infinite Personas** — Code Assistant, Architect, Debugger, Security Reviewer, and you create new ones in minutes
+- 🧠 **CofounderAgent** — LangGraph-powered strategic partner that remembers your whole project
+- 🛡️ **Safe-by-Default Tools** — Only safe actions enabled until you explicitly approve
+- 📦 **Pluggable Everything** — Add new agents, tools, or even new frontends
+- ⚡ **Next.js 15 + Prisma** — Blazing fast local UI with persistent memory
 
-## 🚀 Get Started in 60 Seconds
+## 🚀 Get Started in 90 Seconds (100% Local)
 
 ```bash
-# 1. Clone
+# 1. Clone & install
 git clone https://github.com/joecapella/agentroot.git && cd agentroot
-
-# 2. Install
 npm install
 
-# 3. Database
-npx prisma migrate dev
+# 2. Install Ollama (if you don't have it)
+curl -fsSL https://ollama.com/install.sh | sh
 
-# 4. Run
+# 3. Pull your favorite coding model
+ollama pull qwen2.5-coder:14b     # or llama3.1, deepseek-coder, etc.
+
+# 4. Start AgentRoot
 npm run dev
 
 # 5. Open http://127.0.0.1:3000
 ```
 
-**That's it.** No cloud signup. No data leaving your machine. Just pure AI firepower.
+**No API keys. No signups. No data leaving your laptop.**
+
+Want to use cloud models later? Just drop in your OpenAI/Anthropic/Azure keys in Settings — BYOK is fully supported.
+
+## 🦙 Local LLM Setup Guide
+
+### Recommended Models (Tested & Fast)
+
+| Model                    | Size   | Best For                     | Command                          |
+|--------------------------|--------|------------------------------|----------------------------------|
+| `qwen2.5-coder:14b`      | 14B    | Best overall coding          | `ollama pull qwen2.5-coder:14b`  |
+| `deepseek-coder-v2:16b`  | 16B    | Complex reasoning            | `ollama pull deepseek-coder-v2`  |
+| `codellama:34b`          | 34B    | Large codebases              | `ollama pull codellama:34b`      |
+| `llama3.1:70b`           | 70B    | Best quality (needs GPU)     | `ollama pull llama3.1:70b`       |
+| `phi3:medium`            | 14B    | Lightweight & fast           | `ollama pull phi3:medium`        |
+
+### Using Hugging Face Models
+
+```bash
+# Download any GGUF model from Hugging Face
+ollama pull hf.co/TheBloke/Mistral-7B-Instruct-v0.2-GGUF
+
+# Or use the Hugging Face Hub directly in Settings
+```
+
+### Switching Models
+
+Just change the model name in **Settings → Model** and AgentRoot will instantly use it. No restart needed.
+
+---
+
+
 
 ---
 
