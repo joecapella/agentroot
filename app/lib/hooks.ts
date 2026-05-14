@@ -124,6 +124,85 @@ export interface StreamState {
   loopCount: number;
 }
 
+/**
+ * Run a turn entirely against the user's local Ollama, then POST the
+ * finalized assistant message to /api/chat/finalize for persistence.
+ *
+ * Why this lives outside `useSendMessage`: it doesn't need React state
+ * hooks itself, and pulling it out keeps the hook readable.
+ */
+async function sendViaOllama(args: {
+  args: SendArgs;
+  modelName: string;
+  signal: AbortSignal;
+  onToken?: (delta: string) => void;
+}): Promise<SendResult | null> {
+  const { args: req, modelName, signal, onToken } = args;
+  if (signal.aborted) throw new Error("Aborted by user");
+
+  // Compose Ollama messages. We keep this minimal in v1 — no full
+  // conversation history replay, because /api/chat/finalize will be
+  // updated to load history server-side if/when we need it. For now
+  // each turn is independent. The persona prompt is left to the model
+  // (Ollama doesn't see our `agent-config/*.prompt.md` system prompts
+  // unless we send them); we ship a short, generic system line.
+  const systemPrompt =
+    "You are a helpful coworker assistant. Answer concisely and execute the user's request directly when possible. No emoji unless the user uses them first.";
+
+  const userText = req.message;
+
+  let chatResult;
+  try {
+    chatResult = await ollamaChat({
+      model: modelName,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userText },
+      ],
+      signal,
+      onToken,
+    });
+  } catch (err) {
+    if (signal.aborted) throw new Error("Aborted by user");
+    throw err;
+  }
+
+  // POST finalized turn for persistence. If this fails the UI still
+  // shows the assistant text the user already saw streamed in; we just
+  // surface the persistence error.
+  const finalized = await api<{
+    conversation: { id: string; title: string; project: string | null };
+    assistant: { id: string; text: string | null; modelUsed: string; createdAt: string };
+    factsExtracted: number;
+  }>("/api/chat/finalize", {
+    method: "POST",
+    body: {
+      conversationId: req.conversationId,
+      userMessage: userText,
+      assistantText: chatResult.text,
+      modelUsed: `ollama:${modelName}`,
+      provider: "ollama",
+      promptTokens: chatResult.promptTokens,
+      completionTokens: chatResult.completionTokens,
+      persona: req.persona,
+      project: req.project,
+    },
+  });
+
+  return {
+    conversation: finalized.conversation,
+    taskKind: "general_chat",
+    persona: req.persona ?? "orchestrator",
+    toolsMode: req.toolsMode,
+    assistant: {
+      id: finalized.assistant.id,
+      text: finalized.assistant.text,
+      imageBase64: null,
+    },
+    factsExtracted: finalized.factsExtracted,
+  };
+}
+
 export function useSendMessage() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -7,6 +7,7 @@ import { CommandPalette } from "./components/CommandPalette";
 import { ConversationSidebar } from "./components/ConversationSidebar";
 import { MemoryPanel } from "./components/MemoryPanel";
 import { MessageThread } from "./components/MessageThread";
+import { OllamaPanel } from "./components/OllamaPanel";
 import { PlanStrip } from "./components/PlanStrip";
 import { ProjectPanel } from "./components/ProjectPanel";
 import { SettingsPanel } from "./components/SettingsPanel";
