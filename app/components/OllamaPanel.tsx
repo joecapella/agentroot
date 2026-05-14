@@ -85,7 +85,7 @@ export function OllamaPanel({
 
   const onPickDefault = (tag: string) => {
     setDefault(tag);
-    setDefaultModel(tag);
+    setDefaultOllamaModel(tag);
   };
 
   const onPull = async (tag: string) => {
