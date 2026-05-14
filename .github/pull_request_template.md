@@ -1,45 +1,35 @@
-## Description
+## 🚀 Description
 
-What does this PR do? What problem does it solve?
+**What does this PR do?**  
+Briefly describe the change and why it matters for the AgentRoot community.
 
-## Related Issue
+Closes #___
 
-Closes #(issue_number_here)
+## 🎯 Type of Change
 
-## Type of Change
+- [ ] 🐛 Bug fix
+- [ ] ✨ New feature / agent / persona
+- [ ] 💥 Breaking change
+- [ ] 📝 Documentation
+- [ ] 🔧 Refactor / DX improvement
 
-- [ ] Bug fix
-- [ ] Feature addition
-- [ ] Breaking change
-- [ ] Documentation update
-- [ ] Refactoring / Code quality
+## ✅ Checklist (Required)
 
-## Changes Made
+- [ ] `npm test` passes
+- [ ] `npm run lint` passes
+- [ ] Conventional commit message (`feat:`, `fix:`, `chore:`)
+- [ ] Docs / README updated if needed
+- [ ] I added tests for new behavior
 
-- Brief description of changes
-- ...
+## 🧪 How to Test
 
-## Testing
+```bash
+npm test
+npm run lint
+```
 
-How was this tested?
+## 📸 Screenshots / Demo (Optional but loved)
 
-- [ ] Unit tests added/updated
-- [ ] Manual testing completed
-- [ ] Tested locally: `npm test && npm run lint`
+## 💬 Notes for Reviewers
 
-## Checklist
-
-- [ ] Code follows project style guidelines
-- [ ] Tests pass: `npm test`
-- [ ] Linter passes: `npm run lint`
-- [ ] Commit messages use conventional format (`feat:`, `fix:`, `chore:`)
-- [ ] Documentation updated if needed
-- [ ] No console warnings or errors introduced
-
-## Screenshots / Demo
-
-If applicable, add screenshots or describe the behavior:
-
-## Notes for Reviewers
-
-Any special considerations or things to pay attention to?
+We're building the future of private AI together — thank you for contributing! ❤️

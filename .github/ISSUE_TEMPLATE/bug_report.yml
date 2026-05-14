@@ -1,7 +1,7 @@
-name: Bug Report
-description: Report a bug or unexpected behavior
+name: 🐛 Bug Report
+description: Help us make AgentRoot rock-solid
 title: "[BUG] "
-labels: ["bug"]
+labels: ["bug", "needs-triage"]
 body:
   - type: markdown
     attributes:

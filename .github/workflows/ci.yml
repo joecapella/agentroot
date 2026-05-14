@@ -1,4 +1,4 @@
-name: CI
+name: 🚀 AgentRoot CI
 
 on:
   push:
@@ -7,6 +7,21 @@ on:
     branches: [main]
 
 jobs:
+  welcome:
+    name: 👋 Welcome Contributor
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.actor != 'joecapella'
+    steps:
+      - name: Post welcome comment
+        uses: actions/first-interaction@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-message: |
+            🎉 **Welcome to AgentRoot!**  
+            Thanks for your first PR. You're helping build the future of private AI coworking.  
+            We'll review this as fast as possible.  
+            Questions? Join the discussion: https://github.com/joecapella/agentroot/discussions
+
   lint:
     name: Lint & Type Check
     runs-on: ubuntu-latest

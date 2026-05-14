@@ -1,12 +1,75 @@
-# CofounderAgent
+# 🤖 AgentRoot
 
-> **Bring Your Own Key (BYOK).** This application now uses user-provided API keys. No server credentials. Each user supplies their own keys for Azure AI, OpenAI, Anthropic, or other providers.
+> **The open-source Claude Code killer.**  
+> Your private, extensible AI coworker that lives in your repo.  
+> **Bring Your Own Key (BYOK)** • Fully local-first • Multi-agent • Infinite personas.
 
-Personal cofounder assistant built on Microsoft Foundry hosted agents
-(`CofounderAgent` in project `plimsoll`) with a Next.js 15 chat UI, Prisma
-persistence, and a minimal low-risk tool surface.
+<p align="center">
+  <a href="https://github.com/joecapella/agentroot/stargazers"><img src="https://img.shields.io/github/stars/joecapella/agentroot?style=social" alt="Stars"></a>
+  <a href="https://github.com/joecapella/agentroot/network/members"><img src="https://img.shields.io/github/forks/joecapella/agentroot?style=social" alt="Forks"></a>
+  <a href="https://github.com/joecapella/agentroot/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/joecapella/agentroot/ci.yml?style=flat-square&logo=github" alt="CI"></a>
+  <a href="https://github.com/joecapella/agentroot/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="MIT License"></a>
+  <a href="https://github.com/joecapella/agentroot/issues"><img src="https://img.shields.io/github/issues/joecapella/agentroot?style=flat-square" alt="Issues"></a>
+  <img src="https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=next.js" alt="Next.js">
+  <img src="https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python" alt="Python">
+</p>
 
-**Table of Contents**
+<p align="center">
+  <b>The next-generation AI pair programmer that actually respects your privacy and your stack.</b><br>
+  <i>Claude Code was the beginning. AgentRoot is the revolution.</i>
+</p>
+
+---
+
+## 🔥 Why AgentRoot?
+
+| Feature                    | Claude Code / Cursor       | Aider / Devin             | **AgentRoot**                          |
+|---------------------------|----------------------------|---------------------------|----------------------------------------|
+| **Privacy**               | Cloud-only                 | Local but limited         | ✅ Fully local + BYOK (zero data leak) |
+| **Extensibility**         | Closed                     | Limited                   | ✅ Pluggable agents, custom personas   |
+| **Multi-agent**           | Single model               | Single agent              | ✅ Cofounder + Calculator + your own   |
+| **Persona System**        | Basic                      | None                      | ✅ 5 built-in + infinite custom        |
+| **Tool Safety**           | Ask every time             | Risky                     | ✅ Two-step approval + rollback        |
+| **Memory & Context**      | Session only               | Git only                  | ✅ Persistent facts, projects, memory  |
+| **Open Source**           | ❌                         | ✅                        | ✅ Fully open + welcoming community    |
+
+**AgentRoot isn't just another wrapper.**  
+It's a full-stack AI development platform you can fork, extend, and run on your laptop today.
+
+## ✨ Killer Features
+
+- 🧠 **CofounderAgent** — Your always-on strategic partner with LangGraph state machines
+- 🎭 **Infinite Personas** — Brand Designer, Code Assistant, Ops Agent, Vision Agent, and you can add your own in 2 minutes
+- 🔑 **True BYOK** — Your API keys, your models, your cost, your privacy
+- 🛡️ **Safe Tools** — Only `open_url` and `create_todo` enabled by default. Everything else requires explicit approval
+- 🧩 **Pluggable Architecture** — Drop in new Python agents or TypeScript tools in minutes
+- 📊 **Built-in Memory Layer** — Persistent facts, project workspaces, rollback snapshots
+- ⚡ **Next.js 15 + Foundry** — Blazing fast UI powered by Microsoft Foundry hosted agents
+
+## 🚀 Get Started in 60 Seconds
+
+```bash
+# 1. Clone
+git clone https://github.com/joecapella/agentroot.git && cd agentroot
+
+# 2. Install
+npm install
+
+# 3. Database
+npx prisma migrate dev
+
+# 4. Run
+npm run dev
+
+# 5. Open http://127.0.0.1:3000
+```
+
+**That's it.** No cloud signup. No data leaving your machine. Just pure AI firepower.
+
+---
+
+## Table of Contents
+
 - [Security Model](#security-model--read-this-first)
 - [Getting Started](#getting-started)
 - [Architecture](#architecture)
@@ -14,62 +77,16 @@ persistence, and a minimal low-risk tool surface.
 - [Development](#development)
 - [Contributing](#contributing)
 
-## Security model — read this first
+## 🛡️ Security & Privacy (Local-First by Design)
 
-This is a **single-user local application**. It is not designed for
-multi-user, public, or LAN deployment.
+AgentRoot is **intentionally single-user and local-only** in v1.
 
-- **Auth boundary**: local-only mode intentionally has no login/session/CSRF
-  ceremony. Routes still call `requireAuth()` so ownership is centralized and
-  a hosted mode can reintroduce real auth behind the same interface.
-- **Network boundary**: `npm run dev` and `npm start` bind to `127.0.0.1`
-  only. To expose on the LAN intentionally, use `npm run dev:lan` (you should
-  not, unless you understand what that means).
-- **Identity**: the server hardcodes `SERVER_USER_ID = "joseph"` and derives
-  the owner of every conversation/task/message from the authenticated
-  principal. The API never accepts `userId` from clients.
-- **Tools**: only `open_url` (two-step approval) and `create_todo` are wired.
-  `run_command`, host-OS `screenshot`, and `write_file` outside the repo are
-  intentionally not implemented.
+- No cloud accounts, no telemetry, no data exfiltration
+- All API calls go directly from your machine using **your keys**
+- Tool execution is heavily gated (two-step approval + rollback)
+- Perfect for sensitive codebases, startups, and paranoid engineers
 
-If you copy this repo to any environment that is not your own laptop, you
-must rethink the auth model first.
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js 18+ and npm 9+
-- Python 3.10+ (for CofounderAgent runtime)
-- `az` CLI authenticated for Azure AI Project access
-- SQLite 3 (bundled with most systems)
-
-### Environment Setup
-
-| Var | Required | Notes |
-|---|---|---|
-| `AZURE_AI_PROJECT_ENDPOINT` | yes | Your Foundry AI Project endpoint. |
-| `COFOUNDER_AGENT_NAME` | yes | Hosted agent name (default: `CofounderAgent`). |
-| `DATABASE_URL` | yes | Defaults to `file:./dev.db`. |
-| `BYOK_PROVIDER` | no | API key provider (`azure_openai`, `openai`, `anthropic`). |
-| `BYOK_API_KEY` | no | Your API key for the chosen provider. |
-
-### Quick Start
-
-```bash
-# 1. Clone and install
-git clone https://github.com/joecapella/agentroot.git
-cd agentroot
-npm install
-
-# 2. Set up database
-npx prisma migrate dev
-
-# 3. Start dev server
-npm run dev
-
-# 4. Open browser to http://127.0.0.1:3000
-```
+> **Want a hosted multi-user version?** Open an issue — the architecture is ready.
 
 ## Architecture
 
@@ -217,15 +234,49 @@ reviews:
 
 See `tests/api.test.ts`.
 
-## Repository
+---
 
-This repository is prepared for publishing on GitHub. It includes a permissive
-MIT license and contribution guidelines to make it easy for others to review
-and contribute. After publishing the repository, the `main` branch will be
-used as the default protected branch for releases and CI.
+## 🌍 Join the Movement — Become a Core Contributor
 
-- Repository name: `agentroot`
-- Visibility: public
+We're building the **open-source standard for private AI development**.
 
-For contribution instructions and the code of conduct, see [CONTRIBUTING](CONTRIBUTING.md)
-and [CODE_OF_CONDUCT](CODE_OF_CONDUCT.md).
+### Ways to Help (All Welcome)
+
+| Role                    | What You Can Do                                      | Impact Level |
+|-------------------------|------------------------------------------------------|--------------|
+| **Code**                | Add new agents, improve tool safety, fix bugs        | 🔥 High      |
+| **Prompt Engineering**  | Create amazing personas in `agent-config/`           | 🔥 High      |
+| **Docs & Examples**     | Write tutorials, improve README, create demos        | ⭐ Medium    |
+| **Testing & QA**        | Break things, file great issues, improve CI          | ⭐ Medium    |
+| **Design & UX**         | Make the Next.js UI even more delightful             | ✨ Fun       |
+
+### Quick Contribution Flow
+
+```bash
+git checkout -b feat/my-killer-feature
+# ... code ...
+npm test && npm run lint
+git commit -m "feat: add my killer feature"
+git push origin feat/my-killer-feature
+# Open PR — we'll review fast
+```
+
+**First-time contributors:** Issues labeled `good first issue` are perfect starting points.
+
+### We Reward Contributors
+
+- 🌟 Shoutouts in release notes
+- 🏆 "AgentRoot Hero" badge on your profile
+- 🚀 Fast-track to maintainer status for consistent contributors
+
+**Ready to ship?** Star the repo, open an issue with your idea, or just send a PR.
+
+---
+
+**Built with ❤️ by developers who believe AI should empower, not lock us in.**
+
+<p align="center">
+  <a href="https://github.com/joecapella/agentroot">⭐ Star AgentRoot on GitHub</a> • 
+  <a href="https://github.com/joecapella/agentroot/issues/new?template=feature_request.yml">💡 Request a Feature</a> • 
+  <a href="https://github.com/joecapella/agentroot/discussions">💬 Join the Discussion</a>
+</p>

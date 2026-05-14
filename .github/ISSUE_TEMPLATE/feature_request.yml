@@ -1,7 +1,7 @@
-name: Feature Request
-description: Suggest a new feature or enhancement
+name: 💡 Feature Request / Idea
+description: Shape the future of open-source AI coworking
 title: "[FEATURE] "
-labels: ["enhancement"]
+labels: ["enhancement", "good first issue"]
 body:
   - type: markdown
     attributes:
