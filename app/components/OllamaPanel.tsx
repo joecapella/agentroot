@@ -127,11 +127,11 @@ export function OllamaPanel({
     onClose?.();
   };
 
+  const installedTags = useMemo(() => new Set(models.map((m) => m.name)), [models]);
+
   if (mode === "onboarding" && (dismissed || (detect?.reachable && models.length > 0 && defaultModel))) {
     return null;
   }
-
-  const installedTags = useMemo(() => new Set(models.map((m) => m.name)), [models]);
 
   return (
     <section
