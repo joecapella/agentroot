@@ -10,6 +10,7 @@ import type {
 } from "../lib/types";
 import { api, ApiError } from "../lib/apiClient";
 import { footer } from "./styles";
+import { getDefaultOllamaModel } from "../lib/ollamaClient";
 
 const PERSONAS: { value: Persona | "auto"; label: string }[] = [
   { value: "auto", label: "Auto" },
@@ -88,6 +89,15 @@ export function ChatInput({
   const [mentionMatches, setMentionMatches] = useState<string[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const mentionAbortRef = useRef<AbortController | null>(null);
+
+  // Local Ollama indicator
+  const [activeLocalModel, setActiveLocalModel] = useState<string | null>(null);
+  useEffect(() => {
+    setActiveLocalModel(getDefaultOllamaModel());
+    const onStorage = () => setActiveLocalModel(getDefaultOllamaModel());
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   function detectMention(value: string, caret: number) {
     // Find the start of the @-token immediately before the caret.
@@ -315,6 +325,21 @@ export function ChatInput({
             <option key={p.value} value={p.value}>Persona: {p.label}</option>
           ))}
         </select>
+        {activeLocalModel && (
+          <div
+            style={{
+              fontSize: 11,
+              padding: "2px 8px",
+              borderRadius: 999,
+              background: "rgba(34,197,94,0.15)",
+              color: "var(--ok)",
+              alignSelf: "flex-start",
+            }}
+            title="Chatting with local Ollama model"
+          >
+            🦙 {activeLocalModel}
+          </div>
+        )}
         <select value={reasoning} onChange={(e) => setReasoning(e.target.value as ReasoningProfile)}>
           <option value="fast">Fast</option>
           <option value="balanced">Balanced</option>

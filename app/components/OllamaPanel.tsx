@@ -105,11 +105,14 @@ export function OllamaPanel({
       try {
         const installed = await listOllamaModels(getOllamaBaseUrl());
         setModels(installed);
+
+        // Auto-select if this was the first model installed.
+        if (installed.length === 1) {
+          onPickDefault(tag);
+        }
       } catch {
         /* fall through; user can refresh */
       }
-      // Auto-select if this was the first install.
-      if (models.length === 0) onPickDefault(tag);
     } catch (err) {
       setPullError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -327,8 +330,18 @@ export function OllamaPanel({
               </div>
             )}
             {pullError && (
-              <div style={{ fontSize: 12, color: "var(--danger)" }}>
+              <div style={{ fontSize: 12, color: "var(--danger)", display: "flex", alignItems: "center", gap: 8 }}>
                 Pull failed: {pullError}
+                <button
+                  onClick={() => {
+                    if (pulling) return;
+                    const lastTag = pulling || CURATED_OLLAMA_MODELS[0]?.tag;
+                    if (lastTag) void onPull(lastTag);
+                  }}
+                  style={{ fontSize: 11 }}
+                >
+                  Retry
+                </button>
               </div>
             )}
           </div>

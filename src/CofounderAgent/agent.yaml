@@ -3,17 +3,17 @@
 kind: hosted
 name: CofounderAgent
 description: |
-  Joseph's personal cofounder assistant. Orchestrator agent that adopts one of
-  several personas (orchestrator | code_assistant | brand_designer | ops | vision)
-  based on the requested task kind. Routes between deployed Foundry models.
-  Supports image generation, file operations (via backend delegation), web fetch,
-  and multi-step planning.
+                                                                                                                  Personal cofounder assistant. Orchestrator agent that adopts one of several
+  personas (orchestrator | code_assistant | brand_designer | ops | vision) based
+  on the requested task kind. Routes between deployed Foundry models. Supports
+  image generation, file operations (via backend delegation), web fetch, and
+  multi-step planning.
 metadata:
   authors:
     - jthomas
   example:
     - role: user
-      content: Plan my next two hours of PLIMSOLL work.
+      content: Plan my next two hours of work.
     - role: user
       content: '[persona:code_assistant] Refactor the auth module to use OAuth.'
   tags:
@@ -33,6 +33,12 @@ health:
   initialDelaySeconds: 5
   periodSeconds: 10
 environment_variables:
+  # NOTE: Foundry now reserves the env-var names PORT, FOUNDRY_*, and AGENT_*
+  # per the container-image-spec (validated 2026-05-14 via HTTP 400
+  # invalid_payload). The Foundry platform sets PORT itself; the container's
+  # uvicorn entrypoint must read it from the runtime environment, not from
+  # this yaml. HEALTH_PORT is fine because it doesn't match the reserved
+  # prefixes.
   - name: AZURE_OPENAI_ENDPOINT
     value: ${AZURE_OPENAI_ENDPOINT}
   - name: OPENAI_API_VERSION
@@ -49,7 +55,5 @@ environment_variables:
     value: "true"
   - name: HEALTH_PORT
     value: "8080"
-  - name: PORT
-    value: "8088"
   - name: LOCAL_DEV_MODE
     value: "false"
