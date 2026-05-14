@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api } from "../lib/apiClient";
+import { OllamaPanel } from "./OllamaPanel";
 import { drawer } from "./styles";
 
 function BakeButton() {
@@ -75,10 +76,16 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
   return (
     <aside style={drawer}>
       <div style={{ display: "flex", justifyContent: "space-between", padding: 12, borderBottom: "1px solid var(--border)" }}>
-        <strong>Settings — persona prompts</strong>
+        <strong>Settings</strong>
         <button onClick={onClose}>×</button>
       </div>
       <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
+        <OllamaPanel mode="settings" />
+      </div>
+      <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+          Persona prompts
+        </div>
         <select
           value={activeFile}
           onChange={(e) => setActiveFile(e.target.value)}

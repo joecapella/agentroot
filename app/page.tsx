@@ -212,6 +212,11 @@ function ChatPage() {
           </div>
         </header>
 
+        {/* Onboarding banner: shows install hint if Ollama is missing,
+            model picker if Ollama is reachable but no default chosen,
+            auto-hides once a default is set. */}
+        <OllamaPanel mode="onboarding" />
+
         <PlanStrip plans={plans} loading={plansLoading} onRefresh={reloadPlans} />
 
         <MessageThread
