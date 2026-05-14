@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth } from "@/src/server/auth";
+import { runRoute, sanitizedError } from "@/src/server/errors";
 import { deleteFact, getFactById, updateFact } from "@/src/memory";
 
 export const runtime = "nodejs";
@@ -21,44 +22,56 @@ const updateSchema = z.object({
 
 export async function GET(req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const principal = requireAuth(req);
-  const { id } = await props.params;
-  const fact = await getFactById(principal.userId, id);
-  if (!fact) {
-    return NextResponse.json({ error: "not_found" }, { status: 404 });
-  }
-  return NextResponse.json({ fact });
+  if (principal instanceof NextResponse) return principal;
+
+  return runRoute("facts.id.GET", async () => {
+    const { id } = await props.params;
+    const fact = await getFactById(principal.userId, id);
+    if (!fact) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    return NextResponse.json({ fact });
+  });
 }
 
 export async function PATCH(req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const principal = requireAuth(req);
-  const { id } = await props.params;
+  if (principal instanceof NextResponse) return principal;
 
-  const body = await req.json().catch(() => ({}));
-  const parsed = updateSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.format() }, { status: 400 });
-  }
-  const data: Record<string, unknown> = {};
-  if (parsed.data.label !== undefined) data.label = parsed.data.label;
-  if (parsed.data.fullText !== undefined) data.fullText = parsed.data.fullText;
-  if (parsed.data.importance !== undefined) data.importance = parsed.data.importance;
-  if (parsed.data.expiresAt !== undefined) {
-    data.expiresAt = parsed.data.expiresAt === null ? null : new Date(parsed.data.expiresAt);
-  }
+  return runRoute("facts.id.PATCH", async () => {
+    const { id } = await props.params;
 
-  const updated = await updateFact(principal.userId, id, data);
-  if (!updated) {
-    return NextResponse.json({ error: "not_found" }, { status: 404 });
-  }
-  return NextResponse.json({ fact: updated });
+    const body = await req.json().catch(() => ({}));
+    const parsed = updateSchema.safeParse(body);
+    if (!parsed.success) {
+      return sanitizedError("bad_request", 400, parsed.error.format(), "facts.id.parse");
+    }
+    const data: Record<string, unknown> = {};
+    if (parsed.data.label !== undefined) data.label = parsed.data.label;
+    if (parsed.data.fullText !== undefined) data.fullText = parsed.data.fullText;
+    if (parsed.data.importance !== undefined) data.importance = parsed.data.importance;
+    if (parsed.data.expiresAt !== undefined) {
+      data.expiresAt = parsed.data.expiresAt === null ? null : new Date(parsed.data.expiresAt);
+    }
+
+    const updated = await updateFact(principal.userId, id, data);
+    if (!updated) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    return NextResponse.json({ fact: updated });
+  });
 }
 
 export async function DELETE(req: NextRequest, props: { params: Promise<{ id: string }> }) {
   const principal = requireAuth(req);
-  const { id } = await props.params;
-  const ok = await deleteFact(principal.userId, id);
-  if (!ok) {
-    return NextResponse.json({ error: "not_found" }, { status: 404 });
-  }
-  return NextResponse.json({ ok: true });
+  if (principal instanceof NextResponse) return principal;
+
+  return runRoute("facts.id.DELETE", async () => {
+    const { id } = await props.params;
+    const ok = await deleteFact(principal.userId, id);
+    if (!ok) {
+      return NextResponse.json({ error: "not_found" }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true });
+  });
 }

@@ -4,6 +4,39 @@ import { useEffect, useState } from "react";
 import { api } from "../lib/apiClient";
 import { drawer } from "./styles";
 
+function BakeButton() {
+  const [baking, setBaking] = useState(false);
+  const [bakedAt, setBakedAt] = useState<string | null>(null);
+  const [bakeError, setBakeError] = useState<string | null>(null);
+
+  const bake = async () => {
+    setBaking(true);
+    setBakedAt(null);
+    setBakeError(null);
+    try {
+      const res = await api<{ baked: boolean; note: string; copied: string[] }>(
+        "/api/settings/bake",
+        { method: "POST" }
+      );
+      if (res.baked) setBakedAt(`Baked ${res.copied.length} files`);
+    } catch (e) {
+      setBakeError(String(e));
+    } finally {
+      setBaking(false);
+    }
+  };
+
+  return (
+    <>
+      <button onClick={bake} disabled={baking}>
+        {baking ? "Baking…" : "Bake into container"}
+      </button>
+      {bakedAt && <span style={{ color: "var(--ok)", fontSize: 12, alignSelf: "center" }}>{bakedAt}</span>}
+      {bakeError && <span style={{ color: "var(--danger)", fontSize: 12, alignSelf: "center" }}>{bakeError}</span>}
+    </>
+  );
+}
+
 export function SettingsPanel({ onClose }: { onClose: () => void }) {
   const [files, setFiles] = useState<Record<string, string>>({});
   const [activeFile, setActiveFile] = useState<string>("orchestrator.prompt.md");
@@ -72,8 +105,9 @@ export function SettingsPanel({ onClose }: { onClose: () => void }) {
           background: "var(--panel)",
         }}
       />
-      <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8 }}>
+      <div style={{ padding: 12, borderTop: "1px solid var(--border)", display: "flex", gap: 8, flexWrap: "wrap" }}>
         <button onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+        <BakeButton />
         {savedAt && (
           <span style={{ color: "var(--ok)", fontSize: 12, alignSelf: "center" }}>
             Saved at {savedAt}

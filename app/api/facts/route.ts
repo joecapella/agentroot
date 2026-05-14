@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth } from "@/src/server/auth";
+import { runRoute, sanitizedError } from "@/src/server/errors";
 import { createFact, listFacts } from "@/src/memory";
 import { FACT_CATEGORIES, type FactCategory } from "@/app/lib/types";
 
@@ -23,38 +24,46 @@ const createSchema = z.object({
 
 export async function GET(req: NextRequest) {
   const principal = requireAuth(req);
-  const { searchParams } = new URL(req.url);
-  const category = searchParams.get("category");
-  const q = searchParams.get("q") ?? "";
-  const limit = Math.min(parseInt(searchParams.get("limit") ?? "50", 10), 200);
+  if (principal instanceof NextResponse) return principal;
 
-  const result = await listFacts({
-    userId: principal.userId,
-    ...(category && FACT_CATEGORIES.includes(category as FactCategory)
-      ? { category: category as FactCategory }
-      : {}),
-    ...(q ? { q } : {}),
-    limit,
+  return runRoute("facts.GET", async () => {
+    const { searchParams } = new URL(req.url);
+    const category = searchParams.get("category");
+    const q = searchParams.get("q") ?? "";
+    const limit = Math.min(parseInt(searchParams.get("limit") ?? "50", 10), 200);
+
+    const result = await listFacts({
+      userId: principal.userId,
+      ...(category && FACT_CATEGORIES.includes(category as FactCategory)
+        ? { category: category as FactCategory }
+        : {}),
+      ...(q ? { q } : {}),
+      limit,
+    });
+
+    return NextResponse.json(result);
   });
-
-  return NextResponse.json(result);
 }
 
 export async function POST(req: NextRequest) {
   const principal = requireAuth(req);
-  const body = await req.json().catch(() => ({}));
-  const parsed = createSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.format() }, { status: 400 });
-  }
-  const data = parsed.data;
-  const fact = await createFact({
-    userId: principal.userId,
-    category: data.category,
-    label: data.label,
-    fullText: data.fullText,
-    importance: data.importance,
-    expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+  if (principal instanceof NextResponse) return principal;
+
+  return runRoute("facts.POST", async () => {
+    const body = await req.json().catch(() => ({}));
+    const parsed = createSchema.safeParse(body);
+    if (!parsed.success) {
+      return sanitizedError("bad_request", 400, parsed.error.format(), "facts.parse");
+    }
+    const data = parsed.data;
+    const fact = await createFact({
+      userId: principal.userId,
+      category: data.category,
+      label: data.label,
+      fullText: data.fullText,
+      importance: data.importance,
+      expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
+    });
+    return NextResponse.json({ fact }, { status: 201 });
   });
-  return NextResponse.json({ fact }, { status: 201 });
 }

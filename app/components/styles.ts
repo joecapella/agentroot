@@ -62,6 +62,44 @@ export function statusColor(s: string): string {
   return "var(--accent)";
 }
 
+// ── Mobile responsive overrides (injected via media query in page) ──────────
+
+export const mobileLayout: CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "1fr",
+  gridTemplateRows: "auto 1fr auto",
+  height: "100vh",
+  width: "100vw",
+};
+
+export const mobileSidebarOverlay: CSSProperties = {
+  position: "fixed",
+  top: 0,
+  left: 0,
+  width: "80vw",
+  maxWidth: 300,
+  height: "100vh",
+  background: "var(--panel)",
+  borderRight: "1px solid var(--border)",
+  zIndex: 60,
+  display: "flex",
+  flexDirection: "column",
+};
+
+export const mobileDrawer: CSSProperties = {
+  position: "fixed",
+  top: 0,
+  right: 0,
+  width: "90vw",
+  maxWidth: 400,
+  height: "100vh",
+  background: "var(--panel)",
+  borderLeft: "1px solid var(--border)",
+  display: "flex",
+  flexDirection: "column",
+  zIndex: 50,
+};
+
 // ── Memory panel styles ────────────────────────────────────────────────────
 
 export const memoryHeader: CSSProperties = {

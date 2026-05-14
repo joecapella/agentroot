@@ -6,26 +6,50 @@ description: |
   Joseph's personal cofounder assistant. Orchestrator agent that adopts one of
   several personas (orchestrator | code_assistant | brand_designer | ops | vision)
   based on the requested task kind. Routes between deployed Foundry models.
+  Supports image generation, file operations (via backend delegation), web fetch,
+  and multi-step planning.
 metadata:
-    authors:
-        - jthomas
-    example:
-        - role: user
-          content: Plan my next two hours of PLIMSOLL work.
-    tags:
-        - cofounder
-        - orchestrator
-        - personal
+  authors:
+    - jthomas
+  example:
+    - role: user
+      content: Plan my next two hours of PLIMSOLL work.
+    - role: user
+      content: '[persona:code_assistant] Refactor the auth module to use OAuth.'
+  tags:
+    - cofounder
+    - orchestrator
+    - personal
 protocols:
-    - protocol: responses
-      version: v1
+  - protocol: responses
+    version: v1
 resources:
-    cpu: "0.5"
-    memory: 1Gi
+  cpu: "1.0"
+  memory: 2Gi
+  gpu: "0"
+health:
+  port: 8080
+  path: /readyz
+  initialDelaySeconds: 5
+  periodSeconds: 10
 environment_variables:
-    - name: AZURE_OPENAI_ENDPOINT
-      value: ${AZURE_OPENAI_ENDPOINT}
-    - name: OPENAI_API_VERSION
-      value: 2025-03-01-preview
-    - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
-      value: gpt-5.5
+  - name: AZURE_OPENAI_ENDPOINT
+    value: ${AZURE_OPENAI_ENDPOINT}
+  - name: OPENAI_API_VERSION
+    value: 2025-03-01-preview
+  - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+    value: gpt-5.5
+  - name: AZURE_AI_PROJECT_ENDPOINT
+    value: ${AZURE_AI_PROJECT_ENDPOINT}
+  - name: LOG_LEVEL
+    value: INFO
+  - name: JSON_LOGS
+    value: "true"
+  - name: ENABLE_HEALTH_SERVER
+    value: "true"
+  - name: HEALTH_PORT
+    value: "8080"
+  - name: PORT
+    value: "8088"
+  - name: LOCAL_DEV_MODE
+    value: "false"

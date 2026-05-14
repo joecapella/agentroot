@@ -87,3 +87,27 @@ pre {
   padding: 10px;
   overflow-x: auto;
 }
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  :root {
+    font-size: 14px;
+  }
+
+  button {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  select,
+  input[type="text"],
+  textarea {
+    font-size: 16px; /* Prevent iOS zoom on focus */
+  }
+}
+
+@media (max-width: 480px) {
+  :root {
+    font-size: 13px;
+  }
+}

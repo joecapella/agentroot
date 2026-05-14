@@ -3,17 +3,22 @@ import { z } from "zod";
 
 import { prisma } from "@/src/prisma";
 import {
+  extractUsage,
   flattenEnvelope,
   generateImages,
-  invokeAgent,
   isValidResponseId,
   type InvokeError,
 } from "@/src/foundryClient";
+import { invokeLLM } from "@/src/server/llmRouter";
 import {
   inferTaskKind,
   personaForTask,
+  pickByokChatModel,
   pickChatModelForTask,
+  type DeploymentSpec,
   type Persona,
+  type TaskKind,
+  type UserKeys,
 } from "@/src/modelRouting";
 import {
   ownsConversation,
@@ -21,34 +26,25 @@ import {
   requireSameOriginHeader,
 } from "@/src/server/auth";
 import { runRoute, sanitizedError } from "@/src/server/errors";
-import { getMemoryPreamble } from "@/src/memory";
+import { getMemoryPreamble, createFact } from "@/src/memory";
+import { extractAndStripFacts } from "@/src/server/factExtractor";
+import { runReActLoop, type LoopEvent } from "@/src/server/agentLoop";
+import { recordTokenUsage } from "@/src/server/tokenTracker";
+import { logEvent } from "@/src/server/analytics";
+import { composeInstructions } from "@/src/server/personaPrompts";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 /**
- * /api/chat — authenticated, single-user.
- *
- * The Principal's userId is the ONLY source of ownership. We do not accept
- * userId from the request body. We do accept conversationId, but we verify
- * that the conversation belongs to the principal before appending to it.
- *
- * Image base64 outputs from the agent are capped at IMAGE_MAX_BYTES before
- * being written to the DB. Anything larger returns 413 with a stable code
- * and the caller is expected to retry with a smaller image (or, later, a
- * blob-storage backed path).
- *
- * gpt-image-2 high-quality landscape (1536x1024) PNG outputs routinely exceed
- * 2 MB, so the cap is raised to 10 MB. This is the same order of magnitude
- * SQLite can hold in a single BLOB without paging pain. If we ever need
- * bigger, switch to blob-storage-backed rendering instead of raising further.
+ * Max chars on a single chat input. Bumped 2026-05-14 from 20k → 200k so
+ * "paste this stack trace / file / failing test output" workflows work.
+ * The real ceiling is whichever model's context window is in play; the LLM
+ * router and `truncateHistory` enforce that downstream.
  */
+const MESSAGE_MAX_CHARS = 200_000;
 
-const IMAGE_MAX_BYTES = 10 * 1024 * 1024; // 10 MB (was 2 MB)
-const MESSAGE_MAX_CHARS = 20_000;
-
-/** Validated subset of gpt-image-2 capabilities. See app/lib/types.ts for
- *  rationale on why custom sizes are not exposed in v1. */
 const IMAGE_QUALITY_VALUES = ["auto", "low", "medium", "high"] as const;
 const IMAGE_SIZE_VALUES = [
   "auto",
@@ -56,6 +52,25 @@ const IMAGE_SIZE_VALUES = [
   "1024x1536",
   "1536x1024",
 ] as const;
+
+/**
+ * Per-request BYOK ("Bring Your Own Key") schema.
+ *
+ * Keys arrive in-memory for the duration of one request and are never
+ * persisted to the database, written to disk, logged in plaintext, or
+ * echoed back to the client. The `secretsPolicy` redactor catches any
+ * accidental echo by the model.
+ *
+ * Each field is bounded to 256 chars to refuse oversized junk early.
+ * The provider APIs themselves validate the prefix and signature.
+ */
+const UserKeysSchema = z
+  .object({
+    openai: z.string().max(256).optional(),
+    anthropic: z.string().max(256).optional(),
+    gemini: z.string().max(256).optional(),
+  })
+  .optional();
 
 const Body = z.object({
   conversationId: z.string().optional(),
@@ -68,25 +83,12 @@ const Body = z.object({
   project: z.string().max(80).optional(),
   imageQuality: z.enum(IMAGE_QUALITY_VALUES).optional(),
   imageSize: z.enum(IMAGE_SIZE_VALUES).optional(),
+  imageBase64: z.string().optional(),
+  userKeys: UserKeysSchema,
 });
 
-/**
- * Decide whether this turn should attach the hosted `image_generation` tool.
- *
- * We attach it when the routing layer thinks this is a visual task, OR when
- * the user explicitly picked the brand_designer / vision persona. We do NOT
- * attach it on every turn because (a) it costs more, (b) it can confuse the
- * model into generating unwanted images.
- */
-function wantsImageTool(args: {
-  taskKind: string;
-  persona: Persona;
-}): boolean {
-  return (
-    args.taskKind === "visual" ||
-    args.persona === "brand_designer" ||
-    args.persona === "vision"
-  );
+function sse(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
 const AGENT_NAME = process.env.COFOUNDER_AGENT_NAME ?? "CofounderAgent";
@@ -97,26 +99,32 @@ export async function POST(req: NextRequest) {
   const csrf = requireSameOriginHeader(req);
   if (csrf) return csrf;
 
-  return runRoute("chat.POST", async () => {
-    let parsed;
-    try {
-      parsed = Body.parse(await req.json());
-    } catch (err) {
-      return sanitizedError("bad_request", 400, err, "chat.parse");
-    }
+  let parsed;
+  try {
+    parsed = Body.parse(await req.json());
+  } catch (err) {
+    return runRoute("chat.POST", async () =>
+      sanitizedError("bad_request", 400, err, "chat.parse")
+    );
+  }
 
-    const {
-      message,
-      reasoningProfile,
-      toolsMode,
-      persona,
-      project,
-      imageQuality,
-      imageSize,
-    } = parsed;
+  const {
+    message,
+    reasoningProfile,
+    toolsMode,
+    persona,
+    project,
+    imageQuality,
+    imageSize,
+  } = parsed;
 
-    // 1. Load or create the conversation — owned by the authenticated user.
-    let conv = parsed.conversationId
+  let conv: Awaited<ReturnType<typeof prisma.conversation.findUnique>>;
+  let taskKind: TaskKind;
+  let effectivePersona: Persona;
+  let route: DeploymentSpec;
+  let memoryPreamble: string | null;
+  try {
+    conv = parsed.conversationId
       ? await prisma.conversation.findUnique({ where: { id: parsed.conversationId } })
       : null;
 
@@ -124,7 +132,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
     if (conv && !ownsConversation(principal, conv)) {
-      // 404 (not 403) to avoid leaking the existence of other-user ids.
       return NextResponse.json({ error: "not_found" }, { status: 404 });
     }
     if (!conv) {
@@ -137,273 +144,433 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // 2. Routing decisions.
-    //    `route` is the deployment that will actually produce CHAT text for
-    //    this turn. For `visual`/`vision` tasks we still need a chat model
-    //    (the visual output is produced by a hosted *tool*, not by replacing
-    //    the chat client). `pickChatModelForTask` walks fallbacks until it
-    //    finds one with `family: "azure_openai"`.
-    const taskKind = inferTaskKind(message, { reasoning: reasoningProfile, persona });
-    const effectivePersona: Persona = persona ?? personaForTask(taskKind);
-    const route = pickChatModelForTask(taskKind);
+    taskKind = inferTaskKind(message, { reasoning: reasoningProfile, persona });
+    effectivePersona = persona ?? personaForTask(taskKind);
+    // BYOK routing: if the request carries a user-supplied provider key,
+    // route directly to that provider with the user's key. Otherwise
+    // fall back to the default Foundry-hosted path. Keys live in the
+    // browser's localStorage and are sent per-request; the server NEVER
+    // persists them.
+    const byok = pickByokChatModel(parsed.userKeys ?? null, taskKind);
+    route = byok ?? pickChatModelForTask(taskKind);
+    // Hot-loaded persona prompt + memory preamble.
+    //
+    // We deliberately do NOT send these as the Responses-protocol
+    // `instructions` field — Foundry hosted agents reject that with HTTP
+    // 400 `invalid_payload` / `param: instructions` (same forbidden-list
+    // behaviour as top-level `tools`). Instead, the downstream paths
+    // inject this content as a `[SYSTEM_OVERRIDE]` prefix inside the
+    // first user message of the conversation. Subsequent turns inherit
+    // context via `previous_response_id` and skip the prefix.
+    const factsPreamble = await getMemoryPreamble(principal.userId);
+    memoryPreamble = composeInstructions(effectivePersona, factsPreamble) ?? null;
 
-    // 2b. Build the hosted-tools array. Only attach `image_generation` when
-    //     the turn looks visual; this avoids spurious image generation on
-    //     plain chat turns and keeps costs predictable.
-    const attachImageTool =
-      toolsMode === "allowed" &&
-      wantsImageTool({
-        taskKind,
-        persona: effectivePersona,
-      });
-    const tools = attachImageTool
-      ? [
-          {
-            type: "image_generation",
-            // Defaults match the gpt-image-2 docs: `auto` for both.
-            quality: imageQuality ?? "auto",
-            size: imageSize ?? "auto",
-          },
-        ]
-      : undefined;
+    // Store user message — persist the raw user text (without the
+    // [persona:..] / [task:..] routing prefixes), so message history and
+    // replay don't leak routing internals into the UI (Bug-9 fix). The
+    // prefixes are still added back to `userContent` later when we ship
+    // the turn to the model.
+    await prisma.message.create({
+      data: {
+        conversationId: conv.id,
+        sender: "user",
+        persona: persona ?? null,
+        text: message,
+      },
+    });
+  } catch (err) {
+    console.error("[chat] pre-stream error:", err);
+    return sanitizedError("internal_error", 500, err, "chat.preStream");
+  }
 
-    // 3. Memory preamble: silently inject persistent facts/knowledge into the
-    //    agent's context. This is the core of the "AI wingman" experience:
-    //    the agent remembers who you are, what you care about, and what you
-    //    have forbidden. We cap the budget so we do not starve the actual
-    //    conversation of token space.
-    const memoryPreamble = await getMemoryPreamble(principal.userId);
+  // Stream response
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        controller.enqueue(new TextEncoder().encode(sse(event, data)));
+      };
 
-    // 4. Invoke the hosted agent FIRST. We deliberately do not write any
-    //    rows yet — if the call fails or the envelope is unusable we must
-    //    not leave an orphan user message with an advanced session pointer.
-    const userMessageOptions =
-      attachImageTool && (imageQuality || imageSize)
-        ? JSON.stringify({
+      try {
+        // Build multimodal input
+        let userContent = `[persona:${effectivePersona}] [task:${taskKind}] ${message}`;
+        if (parsed.imageBase64) {
+          userContent = `[persona:${effectivePersona}] [task:${taskKind}] ${message}`;
+        }
+
+        // If toolsMode is "off", this is a simple chat, or this is an explicit
+        // visual-generation request, use the single-turn path. Visual requests
+        // are handled by the backend's direct Azure OpenAI image call below;
+        // letting the ReAct loop decide whether to call generate_image made
+        // image generation flaky/invisible to the UI.
+        if (toolsMode === "off" || taskKind === "fast_brainstorm" || taskKind === "visual") {
+          await handleSingleTurn({
+            conv,
+            userContent,
+            imageBase64: parsed.imageBase64,
             imageQuality: imageQuality ?? "auto",
             imageSize: imageSize ?? "auto",
-          })
-        : null;
-    const inputForAgent = `[persona:${effectivePersona}] [task:${taskKind}] ${message}`;
-
-    let envelope;
-    try {
-      envelope = await invokeAgent(AGENT_NAME, {
-        input: inputForAgent,
-        previous_response_id: conv.foundrySession ?? undefined,
-        ...(memoryPreamble ? { instructions: memoryPreamble } : {}),
-        // Forward hosted tools when applicable. The Responses-protocol
-        // request shape allows arbitrary additional fields; unknown fields
-        // are ignored by older container versions, so this is
-        // forward-compatible.
-        ...(tools ? { tools } : {}),
-      });
-    } catch (err) {
-      const e = err as InvokeError;
-      // Transport-level failure: NOTHING has been persisted for this turn.
-      // The user can retry without any DB cleanup. We still log full detail
-      // server-side via sanitizedError.
-      return sanitizedError(
-        "foundry_invoke_failed",
-        502,
-        { status: e.status, requestId: e.requestId, body: e.body, message: e.message },
-        "chat.invoke"
-      );
-    }
-
-    // 5. Envelope-level "logical" failure (HTTP 200 but status=failed).
-    //    Persist the user message + a system note in ONE transaction so the
-    //    UI shows what happened, but do NOT advance foundrySession — a
-    //    failed-response id is not a valid chain target.
-    if (envelope.status === "failed" || envelope.error) {
-      const failTx = await prisma.$transaction(async (tx) => {
-        await tx.message.create({
-          data: {
-            conversationId: conv.id,
-            sender: "user",
-            persona: persona ?? null,
-            text: message,
-            toolCallsJson: userMessageOptions,
-          },
-        });
-        const sysMsg = await tx.message.create({
-          data: {
-            conversationId: conv.id,
-            sender: "system",
-            text: "Agent reported an error. See server logs (requestId in response) for detail.",
+            memoryPreamble,
             taskKind,
-            modelUsed: route.deployment,
+            effectivePersona,
+            route,
+            send,
+            userId: principal.userId,
+            userKeys: parsed.userKeys ?? undefined,
+          });
+          // NOTE: do NOT close the controller here. The outer `finally`
+          // block at the bottom of this stream calls controller.close()
+          // exactly once. Closing here + falling through to finally
+          // throws ERR_INVALID_STATE ("Controller is already closed"),
+          // which propagates as a piped-response failure and surfaces
+          // in the browser as a generic `TypeError: network error`
+          // mid-stream — observed for every single-turn / visual
+          // request before this fix.
+          return;
+        }
+
+        // ReAct loop
+        const result = await runReActLoop({
+          userId: principal.userId,
+          conversationId: conv.id,
+          agentName: AGENT_NAME,
+          route,
+          toolsMode,
+          repoRoot: process.env.REPO_ROOT ?? process.cwd(),
+          imageQuality: imageQuality ?? "auto",
+          imageSize: imageSize ?? "auto",
+          memoryPreamble: memoryPreamble ?? undefined,
+          // BYOK per-request keys. Forwarded to invokeLLM and
+          // generateImages inside the loop; never persisted.
+          userKeys: parsed.userKeys ?? undefined,
+          onEvent: async (event: LoopEvent) => {
+            send(event.type, event.data);
           },
+          signal: req.signal,
         });
-        await tx.conversation.update({
+
+        // Final update
+        await prisma.conversation.update({
           where: { id: conv.id },
-          // Intentionally do NOT update foundrySession; previous chain stays valid.
           data: { lastMessageAt: new Date() },
         });
-        return sysMsg;
-      });
-      const failResp = sanitizedError(
-        "agent_failed",
-        502,
-        { envelopeError: envelope.error, status: envelope.status },
-        "chat.envelopeFailed"
-      );
-      const failBody = await failResp.json();
-      return NextResponse.json(
-        {
-          ...failBody,
+
+        send("done", {
           conversation: { id: conv.id, title: conv.title, project: conv.project },
-          assistant: failTx,
-        },
-        { status: 502 }
-      );
-    }
-
-    // 6. Flatten the envelope.
-    const flat = flattenEnvelope(envelope);
-
-    // 6b. For visual tasks, generate images directly via the Azure OpenAI
-    //     image endpoint. The hosted agent container cannot reach external
-    //     APIs, so the Node backend generates images and stitches them into
-    //     the assistant response.
-    let extraImages: string[] = [];
-    let droppedGeneratedImages = 0;
-    if (taskKind === "visual") {
-      try {
-        const gen = await generateImages({
-          prompt: message,
-          n: 3,
-          quality: imageQuality ?? "auto",
-          size: imageSize ?? "auto",
-        });
-        extraImages = gen.images;
-        droppedGeneratedImages = gen.droppedCount;
-      } catch (genErr) {
-        // Image generation failure is non-fatal; we still return the
-        // Foundry text response. Log for debugging.
-        console.error("[image-gen] failed:", genErr);
-      }
-    }
-
-    // 6c. Decide whether to keep images (hosted tool results + generated).
-    //    BEHAVIOUR CHANGE (was Bug-2): if only the image exceeds the size
-    //    cap we drop the image and STILL persist the assistant text plus a
-    //    small system note. Returning 413 and silently discarding everything
-    //    advanced conversation state but left the user with no answer.
-    const allImages: string[] = [];
-    let droppedHostedImage = 0;
-    if (flat.imageBase64) {
-      const approxBytes = Math.ceil((flat.imageBase64.length * 3) / 4);
-      if (approxBytes <= IMAGE_MAX_BYTES) allImages.push(flat.imageBase64);
-      else droppedHostedImage++;
-    }
-    for (const img of extraImages) {
-      const approxBytes = Math.ceil((img.length * 3) / 4);
-      if (approxBytes <= IMAGE_MAX_BYTES) allImages.push(img);
-      else droppedGeneratedImages++;
-    }
-
-    let imageBase64ToSave: string | null = null;
-    if (allImages.length === 1) {
-      imageBase64ToSave = allImages[0];
-    } else if (allImages.length > 1) {
-      // Store as JSON array for multi-image assistant messages.
-      imageBase64ToSave = JSON.stringify(allImages);
-    }
-
-    const droppedImage = droppedHostedImage > 0 || droppedGeneratedImages > 0;
-
-    // 7. Decide the next previous_response_id (Bug-5). Only accept envelope
-    //    ids whose shape matches the Responses-protocol pattern. Anything
-    //    else (e.g. a Foundry agent_session_id) keeps the previous valid
-    //    chain target rather than poisoning the next turn.
-    const nextPreviousResponseId = isValidResponseId(envelope.id)
-      ? envelope.id
-      : conv.foundrySession ?? null;
-
-    const toolCallsJson =
-      flat.toolCalls.length > 0 ? JSON.stringify(flat.toolCalls) : null;
-
-    // 8. Commit the whole turn atomically: user message, assistant message,
-    //    optional drop-image system note, conversation update, and task
-    //    rows. SQLite supports nested $transaction.
-    const { assistantMsg } = await prisma.$transaction(async (tx) => {
-      await tx.message.create({
-        data: {
-          conversationId: conv.id,
-          sender: "user",
-          persona: persona ?? null,
-          text: message,
-          // Reuse toolCallsJson as the user-intent options channel — Zod
-          // already validated the enum values, so this is non-XSS safe.
-          toolCallsJson: userMessageOptions,
-        },
-      });
-
-      const am = await tx.message.create({
-        data: {
-          conversationId: conv.id,
-          sender: "assistant",
-          persona: effectivePersona,
-          // Always keep text if present, even when we had to drop an oversized
-          // image. Older callers may have relied on text-only output.
-          text: flat.text || null,
-          imageBase64: imageBase64ToSave,
-          toolCallsJson,
           taskKind,
-          modelUsed: route.deployment,
-        },
-      });
-
-      if (droppedImage) {
-        await tx.message.create({
-          data: {
-            conversationId: conv.id,
-            sender: "system",
-            text:
-              `Agent returned an image larger than the ${IMAGE_MAX_BYTES} byte cap; ` +
-              `image was dropped (text was kept).`,
-            taskKind,
-            modelUsed: route.deployment,
-          },
+          persona: effectivePersona,
+          toolsMode,
+          loopCount: result.loopCount,
+          approvalsCreated: result.approvalsCreated,
         });
+      } catch (err) {
+        console.error("[chat] stream error:", err);
+        try {
+          send("error", { code: "internal_error", message: String(err) });
+        } catch {
+          // controller may already be closed; nothing to do
+        }
+      } finally {
+        // Idempotent close. ReadableStream's default controller throws
+        // ERR_INVALID_STATE on double-close, which would surface as a
+        // pipe failure (browser sees `TypeError: network error`).
+        try {
+          controller.close();
+        } catch {
+          // already closed — fine
+        }
       }
+    },
+  });
 
-      await tx.conversation.update({
-        where: { id: conv.id },
-        data: {
-          foundrySession: nextPreviousResponseId,
-          lastMessageAt: new Date(),
-        },
-      });
-
-      for (const call of flat.toolCalls) {
-        await tx.task.create({
-          data: {
-            userId: principal.userId,
-            conversationId: conv.id,
-            messageId: am.id,
-            type: call.name,
-            status: call.status === "completed" ? "COMPLETED" : "IN_PROGRESS",
-            paramsJson: call.arguments,
-            summary: `${call.name}(...)`,
-          },
-        });
-      }
-
-      return { assistantMsg: am };
-    });
-
-    return NextResponse.json({
-      conversation: { id: conv.id, title: conv.title, project: conv.project },
-      taskKind,
-      persona: effectivePersona,
-      toolsMode,
-      droppedImage: droppedImage || undefined,
-      assistant: assistantMsg,
-    });
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    },
   });
 }
+
+async function handleSingleTurn(args: {
+  conv: { id: string; title: string; project: string | null; previousResponseId: string | null };
+  userContent: string;
+  imageBase64?: string;
+  imageQuality?: "auto" | "low" | "medium" | "high";
+  imageSize?: "auto" | "1024x1024" | "1024x1536" | "1536x1024";
+  memoryPreamble?: string | null;
+  taskKind: string;
+  effectivePersona: Persona;
+  route: DeploymentSpec;
+  send: (event: string, data: unknown) => void;
+  userId: string;
+  /** Per-request BYOK keys. In-memory only; never persisted or logged. */
+  userKeys?: UserKeys;
+}) {
+  const { conv, userContent, imageBase64, imageQuality, imageSize, memoryPreamble, taskKind, effectivePersona, route, send, userId, userKeys } = args;
+
+  send("status", { status: "thinking" });
+
+  // Inject the persona prompt + memory preamble as a SYSTEM_OVERRIDE
+  // block inside the user message when EITHER:
+  //   - it's the first turn of a conversation (no previousResponseId), OR
+  //   - this is an explicit visual task — the deployed container's baked
+  //     prompt currently tells the model image generation isn't wired,
+  //     so we must re-assert capability on every visual turn until the
+  //     container is rebaked + redeployed.
+  // Re-injecting on every turn would bloat context for normal chat, so
+  // we keep it scoped.
+  const shouldInjectOverride =
+    !!memoryPreamble && (!conv.previousResponseId || taskKind === "visual");
+  const decoratedUserText = shouldInjectOverride
+    ? `[SYSTEM_OVERRIDE]\n${memoryPreamble}\n[/SYSTEM_OVERRIDE]\n\n${userContent}`
+    : userContent;
+
+  let inputForAgent: import("@/src/server/llmRouter").LLMPayload["input"];
+  if (imageBase64) {
+    inputForAgent = [
+      {
+        role: "user",
+        content: [
+          { type: "input_text", text: decoratedUserText },
+          { type: "input_image", image_url: { url: imageBase64 } },
+        ],
+      },
+    ];
+  } else {
+    inputForAgent = decoratedUserText;
+  }
+
+  // For explicit visual generation we skip the chat model entirely.
+  // The chat model's text on a visual turn is wasted tokens — we
+  // either discard it (image succeeds) or replace it with the concrete
+  // image error (image fails). Skipping the invoke also avoids the
+  // current container's stale "I can't generate images" refusal
+  // bleeding into the SSE stream before the image arrives.
+  let envelope: import("@/src/foundryClient").ResponsesEnvelope;
+  if (taskKind === "visual") {
+    envelope = {
+      id: "local_visual_skip",
+      object: "response",
+      status: "completed",
+      error: null,
+      output: [],
+    };
+  } else {
+  try {
+    envelope = await invokeLLM(
+      route,
+      AGENT_NAME,
+      {
+        input: inputForAgent,
+        previous_response_id: conv.previousResponseId ?? undefined,
+        // NOTE: `instructions` is rejected by Foundry hosted agents
+        // (`invalid_payload` / `param: instructions`). The override is
+        // injected inside the user text above instead.
+      },
+      { userKeys },
+    );
+  } catch (err) {
+    const e = err as InvokeError;
+    console.error("[chat.singleTurn] foundry invoke failed:", {
+      status: e.status,
+      message: e.message,
+      requestId: e.requestId,
+      body: e.body,
+    });
+    send("error", {
+      code: "foundry_invoke_failed",
+      status: e.status,
+      message: e.message,
+      detail:
+        typeof e.body === "object" && e.body !== null
+          ? (e.body as { error?: { message?: string; code?: string } }).error
+          : undefined,
+    });
+    return;
+  }
+
+  if (envelope.status === "failed" || envelope.error) {
+    send("error", { code: "agent_failed", envelopeError: envelope.error, status: envelope.status });
+    return;
+  }
+  } // end of non-visual invokeLLM branch
+
+  const flat = flattenEnvelope(envelope);
+
+  // Handle explicit visual task image generation. This is intentionally
+  // backend-driven instead of relying on the hosted agent to emit a
+  // generate_image tool call: image generation is the user's primary request,
+  // not an optional model decision.
+  let extraImages: string[] = [];
+  let imageWarning: string | null = null;
+  if (taskKind === "visual") {
+    const imagePrompt = userContent.replace(/^\[persona:[^\]]+\]\s*\[task:[^\]]+\]\s*/, "");
+    send("status", { status: "generating_images", total: 1 });
+    try {
+      const gen = await generateImages({
+        prompt: imagePrompt,
+        n: 1,
+        quality: imageQuality ?? "auto",
+        size: imageSize ?? "auto",
+        // BYOK: if user pasted an OpenAI key, route image-gen to public
+        // OpenAI's gpt-image-1 with that key. Otherwise Azure managed-ID
+        // path (Joseph's self-hosted setup).
+        byokOpenAIKey: userKeys?.openai,
+      });
+      extraImages = gen.images;
+      for (let i = 0; i < extraImages.length; i++) {
+        send("image_progress", { current: i + 1, total: extraImages.length });
+      }
+      if (extraImages.length === 0) {
+        imageWarning = gen.errors[0] ?? "No image was returned by the image deployment.";
+        send("status", { status: "image_generation_failed", message: imageWarning });
+      }
+    } catch (genErr) {
+      imageWarning = genErr instanceof Error ? genErr.message : String(genErr);
+      console.error("[image-gen] failed:", genErr);
+      send("status", { status: "image_generation_failed", message: imageWarning });
+    }
+  }
+
+  // Combine images
+  const allImages: string[] = [];
+  if (flat.imageBase64) {
+    const approxBytes = Math.ceil((flat.imageBase64.length * 3) / 4);
+    if (approxBytes <= IMAGE_MAX_BYTES) allImages.push(flat.imageBase64);
+  }
+  for (const img of extraImages) {
+    const approxBytes = Math.ceil((img.length * 3) / 4);
+    if (approxBytes <= IMAGE_MAX_BYTES) allImages.push(img);
+  }
+
+  let imageBase64ToSave: string | null = null;
+  if (allImages.length === 1) imageBase64ToSave = allImages[0];
+  else if (allImages.length > 1) imageBase64ToSave = JSON.stringify(allImages);
+
+  // For explicit visual tasks the backend drives generation directly via
+  // gpt-image-2-1, NOT the chat model. The chat model's text on a visual
+  // turn is at best a brief; at worst it tells Joseph that image
+  // generation isn't wired (the deployed container's baked prompt still
+  // claims that, until rebaked). Either way it is more confusing than
+  // helpful when there's already an image in the result. So:
+  //   - image succeeded → drop the model's text, let the image speak.
+  //   - image failed → return a concrete one-line error, NOT the
+  //     model's prose. The error is what Joseph needs to act on.
+  //   - non-visual tasks → behave as before.
+  let rawAssistantText: string;
+  if (taskKind === "visual") {
+    if (imageWarning) {
+      rawAssistantText = `Image generation failed: ${imageWarning}`;
+    } else if (allImages.length > 0) {
+      rawAssistantText = "";
+    } else {
+      rawAssistantText = flat.text;
+    }
+  } else {
+    rawAssistantText = imageWarning
+      ? [flat.text, `Image generation failed: ${imageWarning}`].filter(Boolean).join("\n\n")
+      : flat.text;
+  }
+
+  const { cleaned: cleanedText, facts } = rawAssistantText
+    ? extractAndStripFacts(rawAssistantText)
+    : { cleaned: rawAssistantText || "", facts: [] };
+
+  // Defensive secret redaction on assistant text. We already redact tool
+  // output before the model sees it, but the model itself can echo a
+  // secret back into prose in the same turn — strip before DB write.
+  const { redactSecrets } = await import("@/src/server/secretsPolicy");
+  const safeAssistantText = cleanedText ? redactSecrets(cleanedText) : null;
+
+  const assistantMsg = await prisma.message.create({
+    data: {
+      conversationId: conv.id,
+      sender: "assistant",
+      persona: effectivePersona,
+      text: safeAssistantText,
+      imageBase64: imageBase64ToSave,
+      taskKind,
+      modelUsed: route.deployment,
+    },
+  });
+
+  // Real usage from the envelope (Bug-3 fix). Falls back to 0/0 when the
+  // upstream omits `usage`; no character-count heuristics.
+  const { promptTokens, completionTokens } = extractUsage(envelope);
+  await recordTokenUsage({
+    userId,
+    conversationId: conv.id,
+    messageId: assistantMsg.id,
+    modelUsed: route.deployment,
+    promptTokens,
+    completionTokens,
+  });
+
+  // Persist envelope.id so the next turn can chain via previous_response_id
+  // (Bug-2 fix). We only persist ids that match the Responses shape.
+  if (isValidResponseId(envelope.id)) {
+    try {
+      await prisma.conversation.update({
+        where: { id: conv.id },
+        data: { previousResponseId: envelope.id },
+      });
+    } catch (err) {
+      console.warn("[chat.singleTurn] previousResponseId persist failed:", err);
+    }
+  }
+
+  await logEvent(userId, "chat_turn_completed", {
+    conversationId: conv.id,
+    taskKind,
+    persona: effectivePersona,
+    modelUsed: route.deployment,
+    factsExtracted: facts.length,
+  });
+
+  for (const f of facts) {
+    try {
+      await createFact({
+        userId,
+        category: f.category as import("@/app/lib/types").FactCategory,
+        label: f.label,
+        fullText: f.fullText,
+        importance: f.importance,
+        source: `conversation:${conv.id}`,
+      });
+    } catch (err) {
+      console.error("[fact-extract] failed:", err);
+    }
+  }
+
+  await prisma.conversation.update({
+    where: { id: conv.id },
+    data: { lastMessageAt: new Date() },
+  });
+
+  send("message", {
+    id: assistantMsg.id,
+    sender: "assistant",
+    persona: effectivePersona,
+    text: safeAssistantText,
+    imageBase64: imageBase64ToSave,
+    taskKind,
+    modelUsed: route.deployment,
+    createdAt: assistantMsg.createdAt.toISOString(),
+  });
+
+  send("done", {
+    conversation: { id: conv.id, title: conv.title, project: conv.project },
+    taskKind,
+    persona: effectivePersona,
+    toolsMode: "off",
+    assistant: assistantMsg,
+    factsExtracted: facts.length,
+  });
+}
+
+// Fact extraction moved to `src/server/factExtractor.ts` so both the
+// single-turn path and the ReAct loop share one implementation. Imported
+// at the top of this file.
 
 function titleFromFirstMessage(msg: string): string {
   const trimmed = msg.trim().replace(/\s+/g, " ");

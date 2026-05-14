@@ -61,6 +61,11 @@ export interface TaskRow {
   createdAt: string;
 }
 
+export interface UploadedImage {
+  base64: string;
+  mime: string;
+}
+
 export interface ConversationDetail {
   id: string;
   title: string;
@@ -106,4 +111,63 @@ export interface UserProfileRow {
   preferencesJson: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Plan / PlanStep — surfaced as the coworker "task strip" in the UI.
+// ---------------------------------------------------------------------------
+
+export type PlanStatus = "draft" | "running" | "completed" | "failed" | "cancelled";
+export type PlanStepStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+
+export interface PlanStepRow {
+  id: string;
+  planId: string;
+  stepNumber: number;
+  description: string;
+  status: PlanStepStatus;
+  toolName: string | null;
+  toolParamsJson: string | null;
+  resultJson: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface PlanRow {
+  id: string;
+  userId: string;
+  conversationId: string | null;
+  title: string;
+  status: PlanStatus;
+  createdAt: string;
+  completedAt: string | null;
+  steps: PlanStepRow[];
+}
+
+// ---------------------------------------------------------------------------
+// Approvals / Rollbacks — emitted by the ReAct loop and consumed by the
+// UI's ToolCallLog + rollback panel.
+// ---------------------------------------------------------------------------
+
+export type ApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface ApprovalRow {
+  id: string;
+  userId: string;
+  toolName: string;
+  description: string | null;
+  paramsJson: string | null;
+  status: ApprovalStatus;
+  toolExecutionId: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+}
+
+export interface RollbackSnapshotRow {
+  id: string;
+  userId: string;
+  conversationId: string | null;
+  snapshotDir: string;
+  pathsJson: string;
+  createdAt: string;
 }

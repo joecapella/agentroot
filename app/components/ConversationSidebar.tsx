@@ -11,6 +11,8 @@ interface Props {
   projectFilter: string;
   onProjectFilter: (p: string) => void;
   onOpenSettings: () => void;
+  searchQuery: string;
+  onSearchQuery: (q: string) => void;
 }
 
 export function ConversationSidebar({
@@ -21,6 +23,8 @@ export function ConversationSidebar({
   projectFilter,
   onProjectFilter,
   onOpenSettings,
+  searchQuery,
+  onSearchQuery,
 }: Props) {
   return (
     <aside style={sidebar}>
@@ -31,6 +35,15 @@ export function ConversationSidebar({
         </div>
         <div style={{ marginTop: 8, display: "flex", gap: 6 }}>
           <button style={{ flex: 1 }} onClick={() => onSelect(null)}>+ New</button>
+        </div>
+        <div style={{ marginTop: 8 }}>
+          <input
+            type="text"
+            placeholder="Search conversations…"
+            value={searchQuery}
+            onChange={(e) => onSearchQuery(e.target.value)}
+            style={{ width: "100%", background: "var(--panel)" }}
+          />
         </div>
         <div style={{ marginTop: 8 }}>
           <select

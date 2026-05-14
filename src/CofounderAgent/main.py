@@ -1,27 +1,25 @@
 """CofounderAgent — Joseph's personal cofounder assistant.
 
-Single hosted-agent container with multiple *personas* (orchestrator, code,
-brand, ops, vision). Persona is chosen per turn from an optional
-``[persona:<name>]`` prefix on the user message; defaults to ``orchestrator``.
+v3 architecture: pure reasoning container. The LLM sees all tool schemas and
+emits tool_calls, but this container does NOT execute them. Execution happens
+in the Node backend, which drives the ReAct loop.
 
-Each persona picks its preferred Foundry deployment via ``model_routing``.
-Models marked unavailable there fall through to the next preferred option, so
-a deployment that ``api_not_supported``s today doesn't take the agent down —
-it routes around it.
-
-v1 tool surface is intentionally tiny (calculator-style demo tools) so this
-container's behavior stays auditable. Real cofounder tools (open_url,
-create_todo, ...) will arrive via Foundry OpenAPI tools, not by reaching out
-from this code.
+Benefits:
+- The backend controls approval gating, sandboxing, and audit logging.
+- The backend can execute tools that need filesystem / network access.
+- Loop state (plan → act → observe → replan) lives in the backend.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
+import signal
+import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
@@ -34,6 +32,7 @@ from azure.ai.agentserver.langgraph import from_langgraph
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
 from azure.monitor.opentelemetry import configure_azure_monitor
 
+from health_server import mark_error, mark_ready, start_health_server, stop_health_server
 from model_routing import (
     DeploymentSpec,
     PERSONA_TO_TASK,
@@ -42,17 +41,20 @@ from model_routing import (
     TaskKind,
     resolve_route_for_task,
 )
+from project_context import gather_project_context, gather_git_summary
+from settings import configure_logging, get_settings
 
 logger = logging.getLogger(__name__)
 
 load_dotenv()
+_settings = get_settings()
+configure_logging(level=_settings.log_level, json_logs=_settings.json_logs)
 
 if os.getenv("APPLICATIONINSIGHTS_CONNECTION_STRING"):
     configure_azure_monitor(enable_live_metrics=True, logger_name="__main__")
 
-
 # ---------------------------------------------------------------------------
-# Persona prompts (loaded once at startup from the baked-in /prompts dir).
+# Persona prompts
 # ---------------------------------------------------------------------------
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
@@ -76,8 +78,26 @@ def _load_prompt(persona: Persona) -> str:
 
 PERSONA_PROMPTS: Dict[Persona, str] = {p: _load_prompt(p) for p in PERSONA_FILES}
 
+_project_ctx = gather_project_context()
+_git_ctx = gather_git_summary()
+for _p in ("orchestrator", "code_assistant"):
+    if _project_ctx:
+        PERSONA_PROMPTS[_p] = PERSONA_PROMPTS[_p] + "\n" + _project_ctx
+    if _git_ctx:
+        PERSONA_PROMPTS[_p] = PERSONA_PROMPTS[_p] + _git_ctx
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
 PERSONA_PREFIX_RE = re.compile(r"^\s*\[persona:([a-z_]+)\]\s*", re.IGNORECASE)
 TASK_PREFIX_RE = re.compile(r"^\s*\[task:([a-z_]+)\]\s*", re.IGNORECASE)
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize(text: str) -> str:
+    text = _CONTROL_CHAR_RE.sub("", text)
+    return text[: _settings.max_message_chars]
 
 
 def parse_persona(text: str) -> Tuple[Persona, str]:
@@ -85,7 +105,8 @@ def parse_persona(text: str) -> Tuple[Persona, str]:
     if not m:
         return "orchestrator", text
     name = m.group(1).lower()
-    if name not in PERSONA_FILES:
+    if name not in _settings.parsed_persona_allowlist():
+        logger.warning("Rejected unknown persona '%s', falling back to orchestrator", name)
         return "orchestrator", text
     return name, text[m.end() :]
 
@@ -96,28 +117,23 @@ def parse_task(text: str, fallback: TaskKind) -> Tuple[TaskKind, str]:
         return fallback, text
     name = m.group(1).lower()
     if name not in ROUTES:
+        logger.warning("Rejected unknown task '%s', falling back to %s", name, fallback)
         return fallback, text
     return name, text[m.end() :]
 
 
 # ---------------------------------------------------------------------------
-# LLM factory (per persona; one client cached per deployment).
+# LLM factory
 # ---------------------------------------------------------------------------
 
 
 def _credential():
+    if _settings.local_dev_mode or _settings.mock_azure_credentials:
+        logger.info("Using mock credential path (local dev)")
     return DefaultAzureCredential()
 
 
 def _make_chat_llm(spec: DeploymentSpec):
-    """Construct an Azure-hosted chat model for ``spec``.
-
-    All chat-family deployments on the ``plimsoll`` project currently route
-    through the Azure OpenAI chat-completions surface (``family ==
-    "azure_openai"``). When new deployment families need different invoke
-    paths, add another branch here.
-    """
-
     if spec.family != "azure_openai":
         raise ValueError(f"Cannot build chat LLM for non-chat family: {spec.family}")
 
@@ -131,15 +147,12 @@ def _make_chat_llm(spec: DeploymentSpec):
         azure_ad_token_provider=token_provider,
         temperature=0.2,
     )
-    # gpt-5.5 et al. require ``max_completion_tokens`` instead of ``max_tokens``.
-    # We don't actually cap here, but expose the knob so future code can.
     if spec.use_max_completion_tokens:
         kwargs["model_kwargs"] = {"max_completion_tokens": None}
 
     return init_chat_model(**kwargs)
 
 
-# Build a chat client lazily, then cache it. Keyed by deployment name.
 _LLM_CACHE: Dict[str, object] = {}
 
 
@@ -155,9 +168,8 @@ def llm_for_task(persona: Persona, task: TaskKind):
 
 
 # ---------------------------------------------------------------------------
-# Demo tools (retained while we wire OpenAPI tools in Phase 6).
+# Tool schemas (for LLM to emit; NOT executed here)
 # ---------------------------------------------------------------------------
-
 
 @tool
 def add(a: float, b: float) -> float:
@@ -171,40 +183,87 @@ def multiply(a: float, b: float) -> float:
     return a * b
 
 
-TOOLS = [add, multiply]
+@tool
+def read_file(path: str) -> str:
+    """Read a text file at path (relative to repo root)."""
+    return f"[DELEGATED] read_file({path})"
+
+
+@tool
+def list_directory(path: str = ".") -> str:
+    """List files and directories at path."""
+    return f"[DELEGATED] list_directory({path})"
+
+
+@tool
+def write_file(path: str, content: str) -> str:
+    """Write content to a file. DESTRUCTIVE — requires approval."""
+    return f"[DELEGATED] write_file({path})"
+
+
+@tool
+def search_replace(path: str, search: str, replace: str) -> str:
+    """Replace first occurrence of search with replace. DESTRUCTIVE."""
+    return f"[DELEGATED] search_replace({path})"
+
+
+@tool
+def run_command(command: str, cwd: str = ".") -> str:
+    """Run a shell command. REQUIRES APPROVAL."""
+    return f"[DELEGATED] run_command({command})"
+
+
+@tool
+def generate_image(prompt: str, quality: str = "auto", size: str = "auto") -> str:
+    """Generate an image from a text prompt. Returns a base64 data URL."""
+    return f"[DELEGATED] generate_image({prompt})"
+
+
+@tool
+def fetch_url(url: str, max_chars: int = 8000) -> str:
+    """Fetch and return cleaned text from a URL."""
+    return f"[DELEGATED] fetch_url({url})"
+
+
+@tool
+def grep(pattern: str, path: str = ".", max_results: int = 50) -> str:
+    """Search code for pattern using ripgrep/grep."""
+    return f"[DELEGATED] grep({pattern})"
+
+
+@tool
+def git_status(cwd: str = ".") -> str:
+    """Run git status --short."""
+    return f"[DELEGATED] git_status({cwd})"
+
+
+@tool
+def git_diff(cwd: str = ".", target: str = "HEAD") -> str:
+    """Run git diff against target."""
+    return f"[DELEGATED] git_diff({cwd}, {target})"
+
+
+TOOLS = [
+    add, multiply, read_file, list_directory, write_file, search_replace,
+    run_command, generate_image, fetch_url, grep, git_status, git_diff,
+]
 
 
 # ---------------------------------------------------------------------------
-# Graph
+# Graph (NO tool_node — backend drives execution)
 # ---------------------------------------------------------------------------
 
 
 def llm_call(state: MessagesState):
-    """Compose the LLM input for this turn.
-
-    Two important behaviours (both fixes for Bug-3):
-
-    1. We DROP any pre-existing ``SystemMessage`` entries from
-       ``state["messages"]`` before prepending the current persona's prompt.
-       Without this, every turn would re-stack a fresh system prompt on top
-       of whatever a prior turn already prepended, producing quadratic
-       system-message growth and silent token bloat.
-
-    2. We compute persona PER TURN from the latest human message's
-       ``[persona:...]`` tag (or default to ``orchestrator``). When the user
-       switches persona mid-session, the next turn uses ONLY the new
-       persona's system prompt — no leftover system instruction from the
-       previous persona contaminates the call.
-    """
     persona: Persona = "orchestrator"
     task: TaskKind = PERSONA_TO_TASK[persona]
     messages = list(state["messages"])
 
-    # Find the most recent human message and strip any [persona:...] tag.
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if getattr(msg, "type", None) == "human":
             text = msg.content if isinstance(msg.content, str) else str(msg.content)
+            text = _sanitize(text)
             p, cleaned = parse_persona(text)
             persona = p
             task, cleaned = parse_task(cleaned, PERSONA_TO_TASK[persona])
@@ -212,7 +271,6 @@ def llm_call(state: MessagesState):
                 msg.content = cleaned
             break
 
-    # Drop any pre-existing SystemMessage so we don't stack prompts.
     messages_without_system = [
         m for m in messages if not isinstance(m, SystemMessage)
     ]
@@ -226,51 +284,75 @@ def llm_call(state: MessagesState):
     }
 
 
-def tool_node(state: MessagesState):
-    from langchain_core.messages import ToolMessage
-
-    last = state["messages"][-1]
-    tool_calls = getattr(last, "tool_calls", None) or []
-    by_name = {t.name: t for t in TOOLS}
-    results = []
-    for call in tool_calls:
-        name = call["name"]
-        args = call.get("args", {})
-        if name in by_name:
-            try:
-                output = by_name[name].invoke(args)
-            except Exception as exc:  # noqa: BLE001
-                output = f"tool {name} failed: {exc!r}"
-        else:
-            output = f"unknown tool: {name}"
-        results.append(ToolMessage(content=str(output), tool_call_id=call["id"]))
-    return {"messages": results}
-
-
-def should_continue(state: MessagesState) -> Literal["Action", END]:
-    last = state["messages"][-1]
-    if getattr(last, "tool_calls", None):
-        return "Action"
-    return END
-
-
 def build_agent():
     builder = StateGraph(MessagesState)
     builder.add_node("llm_call", llm_call)
-    builder.add_node("environment", tool_node)
     builder.add_edge(START, "llm_call")
-    builder.add_conditional_edges(
-        "llm_call", should_continue, {"Action": "environment", END: END}
-    )
-    builder.add_edge("environment", "llm_call")
+    builder.add_edge("llm_call", END)
     return builder.compile()
 
 
-if __name__ == "__main__":
+# ---------------------------------------------------------------------------
+# Graceful shutdown
+# ---------------------------------------------------------------------------
+
+_shutdown_event = asyncio.Event()
+
+
+def _handle_signal(sig: int) -> None:
+    logger.info("Received signal %s, initiating graceful shutdown…", sig)
+    _shutdown_event.set()
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+async def _main():
+    if _settings.enable_health_server:
+        await start_health_server(host=_settings.host, port=_settings.health_port)
+
     try:
         agent = build_agent()
-        adapter = from_langgraph(agent)
-        adapter.run()
     except Exception:
-        logger.exception("CofounderAgent encountered an error while running")
+        logger.exception("Failed to build agent graph")
+        mark_error("agent_build_failed")
         raise
+
+    mark_ready()
+
+    adapter = from_langgraph(agent)
+    loop = asyncio.get_running_loop()
+
+    def _run_adapter():
+        try:
+            adapter.run()
+        except Exception:
+            logger.exception("Adapter encountered an error")
+            raise
+
+    adapter_task = loop.run_in_executor(None, _run_adapter)
+    shutdown_task = asyncio.create_task(_shutdown_event.wait())
+    done, pending = await asyncio.wait(
+        [adapter_task, shutdown_task],
+        return_when=asyncio.FIRST_COMPLETED,
+    )
+    for t in pending:
+        t.cancel()
+
+    if _settings.enable_health_server:
+        await stop_health_server()
+
+    for t in done:
+        if t is adapter_task:
+            await t
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGTERM, lambda s, f: _handle_signal(s))
+    signal.signal(signal.SIGINT, lambda s, f: _handle_signal(s))
+    try:
+        asyncio.run(_main())
+    except Exception:
+        logger.exception("CofounderAgent fatal error")
+        sys.exit(1)

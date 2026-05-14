@@ -1,7 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./apiClient";
+import {
+  detectOllama,
+  getDefaultOllamaModel,
+  ollamaChat,
+} from "./ollamaClient";
 import type {
   ConversationDetail,
   ConversationSummary,
@@ -33,14 +38,18 @@ export function useProjects() {
   return { projects, reload, error };
 }
 
-export function useConversations(projectFilter: string) {
+export function useConversations(projectFilter: string, searchQuery: string) {
   const [items, setItems] = useState<ConversationSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
   const reload = useCallback(async () => {
     try {
+      const query: Record<string, string | undefined> = {
+        project: projectFilter || undefined,
+        q: searchQuery.trim() || undefined,
+      };
       const data = await api<{ conversations: ConversationSummary[] }>(
         "/api/conversations",
-        { query: { project: projectFilter || undefined } }
+        { query }
       );
       setItems(data.conversations);
       setError(null);
@@ -48,7 +57,7 @@ export function useConversations(projectFilter: string) {
       if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
       else setError(String(err));
     }
-  }, [projectFilter]);
+  }, [projectFilter, searchQuery]);
   useEffect(() => {
     void reload();
   }, [reload]);
@@ -88,9 +97,9 @@ export interface SendArgs {
   toolsMode: ToolsMode;
   persona?: Persona;
   project?: string;
-  /** Only consumed by the backend when the turn is routed to an image task. */
   imageQuality?: ImageQuality;
   imageSize?: ImageSize;
+  imageBase64?: string;
 }
 
 export interface SendResult {
@@ -98,7 +107,245 @@ export interface SendResult {
   taskKind: string;
   persona: Persona;
   toolsMode: ToolsMode;
-  assistant: { id: string; text: string | null };
+  droppedImage?: boolean;
+  assistant: { id: string; text: string | null; imageBase64: string | null };
+  factsExtracted?: number;
+  loopCount?: number;
+  approvalsCreated?: string[];
+}
+
+export interface StreamState {
+  status: string | null;
+  imageProgress: { current: number; total: number } | null;
+  partialMessage: { text: string | null; imageBase64: string | null; persona: Persona | null } | null;
+  toolCalls: Array<{ name: string; arguments: string; call_id: string }>;
+  toolResults: Array<{ call_id: string; name: string; output: string; status: string; diff?: string; rollbackDir?: string }>;
+  approvalsRequired: Array<{ call_id: string; name: string; approvalId: string; description: string }>;
+  loopCount: number;
+}
+
+export function useSendMessage() {
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [streamState, setStreamState] = useState<StreamState>({
+    status: null,
+    imageProgress: null,
+    partialMessage: null,
+    toolCalls: [],
+    toolResults: [],
+    approvalsRequired: [],
+    loopCount: 0,
+  });
+  const abortRef = useRef<AbortController | null>(null);
+
+  const abort = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  }, []);
+
+  const send = useCallback(async (args: SendArgs): Promise<SendResult | null> => {
+    setSending(true);
+    setError(null);
+    setStreamState({
+      status: "thinking",
+      imageProgress: null,
+      partialMessage: null,
+      toolCalls: [],
+      toolResults: [],
+      approvalsRequired: [],
+      loopCount: 0,
+    });
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // ── Ollama-first branch ─────────────────────────────────────────
+    // If the user has selected a local Ollama model AND Ollama is
+    // reachable, run the LLM call entirely client-side and POST the
+    // finalized turn to /api/chat/finalize for persistence. Keeps
+    // the user's prompt off our server, and means the server doesn't
+    // need to reach the user's local Ollama (it can't, anyway).
+    const ollamaModel = getDefaultOllamaModel();
+    if (ollamaModel && !args.imageBase64 && !args.imageQuality && !args.imageSize) {
+      const detect = await detectOllama();
+      if (detect.reachable) {
+        try {
+          const result = await sendViaOllama({
+            args,
+            modelName: ollamaModel,
+            signal: controller.signal,
+            onToken: (delta) => {
+              setStreamState((prev) => ({
+                ...prev,
+                status: "streaming",
+                partialMessage: {
+                  text: (prev.partialMessage?.text ?? "") + delta,
+                  imageBase64: null,
+                  persona: args.persona ?? null,
+                },
+              }));
+            },
+          });
+          return result;
+        } catch (err) {
+          if (err instanceof Error && err.message === "Aborted by user") {
+            setError("Stopped by user");
+          } else if (err instanceof ApiError) {
+            setError(`${err.code} (${err.status})`);
+          } else {
+            setError(String(err));
+          }
+          return null;
+        } finally {
+          setSending(false);
+          abortRef.current = null;
+        }
+      }
+      // Ollama selected but not reachable: fall through to server.
+      // The Settings UI surfaces the install hint separately.
+    }
+
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+        signal: controller.signal,
+      });
+
+      if (controller.signal.aborted) {
+        throw new Error("Aborted by user");
+      }
+
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({ error: "unknown" }));
+        throw new ApiError(
+          res.status,
+          typeof payload.error === "string" ? payload.error : "request_failed"
+        );
+      }
+
+      if (!res.body) {
+        throw new Error("No response body");
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let result: SendResult | null = null;
+
+      while (true) {
+        if (controller.signal.aborted) {
+          await reader.cancel();
+          throw new Error("Aborted by user");
+        }
+
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop() ?? "";
+
+        for (const chunk of lines) {
+          const eventMatch = chunk.match(/^event: (\w+)$/m);
+          const dataMatch = chunk.match(/^data: (.+)$/m);
+          if (!eventMatch || !dataMatch) continue;
+
+          const event = eventMatch[1];
+          const data = JSON.parse(dataMatch[1]);
+
+          if (event === "status") {
+            setStreamState((prev) => ({ ...prev, status: data.status, loopCount: data.loop ?? prev.loopCount }));
+          } else if (event === "image_progress") {
+            setStreamState((prev) => ({ ...prev, imageProgress: { current: data.current, total: data.total } }));
+          } else if (event === "assistant_text") {
+            setStreamState((prev) => ({
+              ...prev,
+              partialMessage: {
+                text: data.text,
+                imageBase64: null,
+                persona: null,
+              },
+            }));
+          } else if (event === "tool_call") {
+            setStreamState((prev) => ({
+              ...prev,
+              toolCalls: [...prev.toolCalls, { name: data.name, arguments: data.arguments, call_id: data.call_id }],
+              status: `running ${data.name}...`,
+            }));
+          } else if (event === "tool_result") {
+            setStreamState((prev) => ({
+              ...prev,
+              toolResults: [...prev.toolResults, data],
+              status: `${data.name} done`,
+            }));
+          } else if (event === "approval_required") {
+            setStreamState((prev) => ({
+              ...prev,
+              approvalsRequired: [...prev.approvalsRequired, {
+                call_id: data.call_id,
+                name: data.name,
+                approvalId: data.approvalId,
+                description: data.description,
+              }],
+              status: `approval required: ${data.name}`,
+            }));
+          } else if (event === "message") {
+            setStreamState((prev) => ({
+              ...prev,
+              partialMessage: {
+                text: data.text,
+                imageBase64: data.imageBase64,
+                persona: data.persona,
+              },
+            }));
+          } else if (event === "done") {
+            result = data as SendResult;
+          } else if (event === "error") {
+            throw new ApiError(data.status ?? 502, data.code ?? "stream_error");
+          }
+        }
+      }
+
+      return result;
+    } catch (err) {
+      if (err instanceof Error && err.message === "Aborted by user") {
+        setError("Stopped by user");
+      } else if (err instanceof ApiError) {
+        setError(`${err.code} (${err.status})`);
+      } else {
+        setError(String(err));
+      }
+      return null;
+    } finally {
+      setSending(false);
+      abortRef.current = null;
+    }
+  }, []);
+
+  return { send, sending, error, streamState, abort };
+}
+
+export function useApproveOpenUrl() {
+  const [pending, setPending] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const approve = useCallback(async (taskId: string) => {
+    setPending(taskId);
+    setError(null);
+    try {
+      await api(`/api/tools/open_url/approve/${taskId}`, { method: "POST" });
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+      throw err;
+    } finally {
+      setPending(null);
+    }
+  }, []);
+  return { approve, pending, error };
 }
 
 // ---------------------------------------------------------------------------
@@ -147,36 +394,182 @@ export function useFacts(category?: string) {
   return { items, total, reload, error };
 }
 
-export function useSendMessage() {
-  const [sending, setSending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+// ---------------------------------------------------------------------------
+// Project workspace hooks
+// ---------------------------------------------------------------------------
 
-  const send = useCallback(async (args: SendArgs): Promise<SendResult | null> => {
-    setSending(true);
+export interface ProjectWorkspace {
+  id: string;
+  slug: string;
+  displayName: string;
+  description: string | null;
+  goalsJson: string;
+  pinnedPathsJson: string;
+  repoRoot: string | null;
+  status: string;
+}
+
+export function useProjectWorkspaces() {
+  const [items, setItems] = useState<ProjectWorkspace[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const reload = useCallback(async () => {
+    try {
+      const data = await api<{ projects: ProjectWorkspace[] }>("/api/projects");
+      setItems(data.projects);
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    }
+  }, []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+  return { items, reload, error };
+}
+
+export function useRegenerateTitle() {
+  const [pending, setPending] = useState(false);
+  const regenerate = useCallback(async (conversationId: string) => {
+    setPending(true);
+    try {
+      return await api<{ conversation: { title: string } }>(
+        `/api/conversations/${conversationId}/title`,
+        { method: "PATCH" }
+      );
+    } catch (err) {
+      if (err instanceof ApiError) console.error(`${err.code} (${err.status})`);
+      else console.error(String(err));
+      return null;
+    } finally {
+      setPending(false);
+    }
+  }, []);
+  return { regenerate, pending };
+}
+
+// ---------------------------------------------------------------------------
+// Approvals hook
+// ---------------------------------------------------------------------------
+
+export interface ApprovalRow {
+  id: string;
+  toolName: string;
+  description: string;
+  status: string;
+  createdAt: string;
+}
+
+export function useApprovals() {
+  const [items, setItems] = useState<ApprovalRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const reload = useCallback(async () => {
+    try {
+      const data = await api<{ approvals: ApprovalRow[] }>("/api/approvals");
+      setItems(data.approvals);
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    }
+  }, []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+  return { items, reload, error };
+}
+
+export function useRollbacks() {
+  const [items, setItems] = useState<Array<{ id: string; snapshotDir: string; pathsJson: string; createdAt: string }>>([]);
+  const [error, setError] = useState<string | null>(null);
+  const reload = useCallback(async () => {
+    try {
+      const data = await api<{ snapshots: Array<{ id: string; snapshotDir: string; pathsJson: string; createdAt: string }> }>("/api/rollback");
+      setItems(data.snapshots);
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    }
+  }, []);
+  const restore = useCallback(async (snapshotDir: string) => {
+    try {
+      return await api<{ restored: boolean }>("/api/rollback", {
+        method: "POST",
+        body: { snapshotDir },
+      });
+    } catch (err) {
+      if (err instanceof ApiError) console.error(`rollback failed: ${err.code} (${err.status})`);
+      else console.error(String(err));
+      return null;
+    }
+  }, []);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+  return { items, reload, error, restore };
+}
+
+export function useResolveApproval() {
+  const [pending, setPending] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const resolve = useCallback(async (id: string, decision: "approved" | "rejected") => {
+    setPending(id);
     setError(null);
     try {
-      return await api<SendResult>("/api/chat", { method: "POST", body: args });
+      return await api<{ approval: ApprovalRow }>(`/api/approvals/${id}`, {
+        method: "POST",
+        body: { decision },
+      });
     } catch (err) {
       if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
       else setError(String(err));
       return null;
     } finally {
-      setSending(false);
-    }
-  }, []);
-
-  return { send, sending, error };
-}
-
-export function useApproveOpenUrl() {
-  const [pending, setPending] = useState<string | null>(null);
-  const approve = useCallback(async (taskId: string) => {
-    setPending(taskId);
-    try {
-      await api(`/api/tools/open_url/approve/${taskId}`, { method: "POST" });
-    } finally {
       setPending(null);
     }
   }, []);
-  return { approve, pending };
+  return { resolve, pending, error };
+}
+
+// ----------------------------------------------------------------------------
+// Plans — coworker task strip data source.
+// ----------------------------------------------------------------------------
+
+import type { PlanRow } from "./types";
+
+/**
+ * Fetches the most recent plans for the current user. The UI uses this as
+ * the data source for the persistent task strip ("checklist sidebar") that
+ * ticks off as the agent executes steps.
+ */
+export function usePlans(opts: { conversationId?: string | null; activeOnly?: boolean } = {}) {
+  const [plans, setPlans] = useState<PlanRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      const query: Record<string, string | undefined> = {};
+      if (opts.activeOnly) query.status = "running";
+      const data = await api<{ plans: PlanRow[] }>("/api/plans", { query });
+      const filtered = opts.conversationId
+        ? data.plans.filter((p) => p.conversationId === opts.conversationId)
+        : data.plans;
+      setPlans(filtered);
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [opts.activeOnly, opts.conversationId]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return { plans, reload, error, loading };
 }

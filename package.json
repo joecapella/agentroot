@@ -12,25 +12,30 @@
     "db:studio": "prisma studio",
     "db:generate": "prisma generate",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 tests/**/*.test.ts"
+    "test": "node --import tsx --test --test-concurrency=1 'tests/**/*.test.ts'"
   },
   "dependencies": {
     "@azure/identity": "^4.5.0",
     "@prisma/client": "^6.0.1",
+    "@types/diff": "^7.0.2",
+    "@types/react-test-renderer": "^19.1.0",
+    "diff": "^9.0.0",
     "dotenv": "^16.4.5",
+    "glob": "^13.0.6",
     "next": "^15.0.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-test-renderer": "^19.2.6",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "prisma": "^6.0.1",
-    "tsx": "^4.21.0",
     "eslint": "^9.39.1",
     "eslint-config-next": "^15.5.18",
+    "prisma": "^6.0.1",
+    "tsx": "^4.21.0",
     "typescript": "^5.7.2"
   }
 }

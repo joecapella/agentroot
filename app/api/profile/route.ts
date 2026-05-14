@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAuth } from "@/src/server/auth";
+import { runRoute, sanitizedError } from "@/src/server/errors";
 import { getOrCreateProfile, updateProfile } from "@/src/memory";
 
 export const runtime = "nodejs";
@@ -24,24 +25,32 @@ const patchSchema = z.object({
 
 export async function GET(req: NextRequest) {
   const principal = requireAuth(req);
-  const profile = await getOrCreateProfile(principal.userId);
-  return NextResponse.json({ profile });
+  if (principal instanceof NextResponse) return principal;
+
+  return runRoute("profile.GET", async () => {
+    const profile = await getOrCreateProfile(principal.userId);
+    return NextResponse.json({ profile });
+  });
 }
 
 export async function PATCH(req: NextRequest) {
   const principal = requireAuth(req);
-  const body = await req.json().catch(() => ({}));
-  const parsed = patchSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json({ error: parsed.error.format() }, { status: 400 });
-  }
-  const data: Record<string, unknown> = {};
-  if (parsed.data.displayName !== undefined) data.displayName = parsed.data.displayName;
-  if (parsed.data.defaultReasoning !== undefined) data.defaultReasoning = parsed.data.defaultReasoning;
-  if (parsed.data.defaultTools !== undefined) data.defaultTools = parsed.data.defaultTools;
-  if (parsed.data.defaultPersona !== undefined) data.defaultPersona = parsed.data.defaultPersona;
-  if (parsed.data.preferencesJson !== undefined) data.preferencesJson = parsed.data.preferencesJson;
+  if (principal instanceof NextResponse) return principal;
 
-  const updated = await updateProfile(principal.userId, data);
-  return NextResponse.json({ profile: updated });
+  return runRoute("profile.PATCH", async () => {
+    const body = await req.json().catch(() => ({}));
+    const parsed = patchSchema.safeParse(body);
+    if (!parsed.success) {
+      return sanitizedError("bad_request", 400, parsed.error.format(), "profile.parse");
+    }
+    const data: Record<string, unknown> = {};
+    if (parsed.data.displayName !== undefined) data.displayName = parsed.data.displayName;
+    if (parsed.data.defaultReasoning !== undefined) data.defaultReasoning = parsed.data.defaultReasoning;
+    if (parsed.data.defaultTools !== undefined) data.defaultTools = parsed.data.defaultTools;
+    if (parsed.data.defaultPersona !== undefined) data.defaultPersona = parsed.data.defaultPersona;
+    if (parsed.data.preferencesJson !== undefined) data.preferencesJson = parsed.data.preferencesJson;
+
+    const updated = await updateProfile(principal.userId, data);
+    return NextResponse.json({ profile: updated });
+  });
 }

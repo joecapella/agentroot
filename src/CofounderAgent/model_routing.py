@@ -74,6 +74,7 @@ class DeploymentSpec:
     # Family chooses the langchain provider/client to use:
     #  - "azure_openai": classic /openai/deployments/<name>/chat/completions
     #  - "image_gen":    image generation, not a chat client
+    #  - "direct_openai": Node backend calls the API directly; container skips
     family: str
     # If True, the factory will skip this and try the fallback. Set False once
     # the underlying deployment is healthy on the Foundry account.
@@ -94,6 +95,13 @@ LOGICAL_DEPLOYMENTS: Dict[str, DeploymentSpec] = {
     "deepseek-v4-flash": DeploymentSpec("DeepSeek-V4-Flash",  "azure_openai"),
     "kimi-k2.6":         DeploymentSpec("Kimi-K2.6",          "azure_openai"),
     "gpt-image-2":       DeploymentSpec("gpt-image-2-1",      "image_gen"),
+    # Direct providers are handled by the Node backend; keep them unavailable
+    # in the container so they never get selected here.
+    "gemini-pro":        DeploymentSpec("gemini-2.5-pro-preview-03-25",   "direct_openai", unavailable=True),
+    "gemini-flash":      DeploymentSpec("gemini-2.5-flash-preview-04-17", "direct_openai", unavailable=True),
+    "ollama-coder":      DeploymentSpec("qwen2.5-coder:7b",              "direct_openai", unavailable=True),
+    "ollama-fast":       DeploymentSpec("llama3.2:3b",                   "direct_openai", unavailable=True),
+    "ollama-deep":       DeploymentSpec("qwen2.5-coder:14b",             "direct_openai", unavailable=True),
 }
 
 
@@ -167,7 +175,7 @@ def resolve_route_for_task(task: TaskKind, *, chat_only: bool = True) -> Deploym
     def _ok(spec: Optional[DeploymentSpec]) -> bool:
         if spec is None:
             return False
-        if chat_only and spec.family != "azure_openai":
+        if chat_only and spec.family not in ("azure_openai", "direct_openai"):
             return False
         return True
 

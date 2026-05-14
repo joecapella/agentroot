@@ -105,6 +105,7 @@ export interface FactCreateInput {
   fullText: string;
   importance?: number;
   expiresAt?: Date | null;
+  source?: string | null;
 }
 
 export async function createFact(input: FactCreateInput) {

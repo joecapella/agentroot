@@ -1,7 +1,7 @@
 # 🤖 AgentRoot
 
-> **The open-source local Claude Code.**  
-> Run any Ollama model, any Hugging Face model, or bring your own cloud keys.  
+> **The open-source local Claude Code.**
+> Run any Ollama model, any Hugging Face model, or bring your own cloud keys.
 > Fully private • Multi-agent • Infinite personas • Built for developers who want control.
 
 <p align="center">
@@ -35,7 +35,7 @@
 | **Memory Layer**          | Session only               | Git only                  | ✅ Persistent facts, projects, rollback      |
 | **Fully Open Source**     | ❌                         | ✅                        | ✅ MIT licensed + welcoming community        |
 
-**This is the real deal.**  
+**This is the real deal.**
 A complete, production-grade, local-first AI coding platform you can fork today.
 
 ## ✨ Killer Local-First Features
@@ -310,7 +310,7 @@ git push origin feat/my-killer-feature
 **Built with ❤️ by developers who believe AI should empower, not lock us in.**
 
 <p align="center">
-  <a href="https://github.com/joecapella/agentroot">⭐ Star AgentRoot on GitHub</a> • 
-  <a href="https://github.com/joecapella/agentroot/issues/new?template=feature_request.yml">💡 Request a Feature</a> • 
+  <a href="https://github.com/joecapella/agentroot">⭐ Star AgentRoot on GitHub</a> •
+  <a href="https://github.com/joecapella/agentroot/issues/new?template=feature_request.yml">💡 Request a Feature</a> •
   <a href="https://github.com/joecapella/agentroot/discussions">💬 Join the Discussion</a>
 </p>

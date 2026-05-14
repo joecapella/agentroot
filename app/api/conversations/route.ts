@@ -13,21 +13,59 @@ export async function GET(req: NextRequest) {
 
   return runRoute("conversations.GET", async () => {
     const project = req.nextUrl.searchParams.get("project") ?? undefined;
-    const list = await prisma.conversation.findMany({
-      where: {
-        userId: principal.userId,
-        ...(project ? { project } : {}),
-      },
-      orderBy: { lastMessageAt: "desc" },
-      take: 100,
-      select: {
-        id: true,
-        title: true,
-        project: true,
-        lastMessageAt: true,
-        createdAt: true,
-      },
-    });
+    const q = req.nextUrl.searchParams.get("q") ?? undefined;
+
+    let list;
+    if (q) {
+      const searchTerm = q.trim().toLowerCase();
+      // Search conversation titles and message text.
+      const matchingConvs = await prisma.message.findMany({
+        where: {
+          conversation: { userId: principal.userId },
+          text: { contains: searchTerm },
+        },
+        select: { conversationId: true },
+        distinct: ["conversationId"],
+        take: 100,
+      });
+      const convIds = matchingConvs.map((m) => m.conversationId);
+      list = await prisma.conversation.findMany({
+        where: {
+          userId: principal.userId,
+          ...(project ? { project } : {}),
+          OR: [
+            { title: { contains: searchTerm } },
+            { id: { in: convIds } },
+          ],
+        },
+        orderBy: { lastMessageAt: "desc" },
+        take: 100,
+        select: {
+          id: true,
+          title: true,
+          project: true,
+          lastMessageAt: true,
+          createdAt: true,
+        },
+      });
+    } else {
+      list = await prisma.conversation.findMany({
+        where: {
+          userId: principal.userId,
+          ...(project ? { project } : {}),
+        },
+        orderBy: { lastMessageAt: "desc" },
+        take: 100,
+        select: {
+          id: true,
+          title: true,
+          project: true,
+          lastMessageAt: true,
+          createdAt: true,
+        },
+      });
+    }
+
     return NextResponse.json({ conversations: list });
   });
 }

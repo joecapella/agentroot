@@ -25,6 +25,7 @@ let SERVER_USER_ID = "";
 let chatRoute: typeof import("@/app/api/chat/route");
 let convListRoute: typeof import("@/app/api/conversations/route");
 let convIdRoute: typeof import("@/app/api/conversations/[id]/route");
+let convTitleRoute: typeof import("@/app/api/conversations/[id]/title/route");
 let tasksRoute: typeof import("@/app/api/tasks/route");
 let settingsRoute: typeof import("@/app/api/settings/route");
 let openUrlRoute: typeof import("@/app/api/tools/open_url/route");
@@ -70,6 +71,7 @@ before(async () => {
   chatRoute = await import("@/app/api/chat/route");
   convListRoute = await import("@/app/api/conversations/route");
   convIdRoute = await import("@/app/api/conversations/[id]/route");
+  convTitleRoute = await import("@/app/api/conversations/[id]/title/route");
   tasksRoute = await import("@/app/api/tasks/route");
   settingsRoute = await import("@/app/api/settings/route");
   openUrlRoute = await import("@/app/api/tools/open_url/route");
@@ -146,6 +148,17 @@ describe("local-only mode", () => {
     assert.equal(r.status, 200);
     const body = (await r.json()) as { conversation: { userId: string } };
     assert.equal(body.conversation.userId, SERVER_USER_ID);
+  });
+
+  it("conversation title PATCH accepts an empty body for auto-regeneration", async () => {
+    const r = await convTitleRoute.PATCH(
+      req(`http://t/api/conversations/${myConvId}/title`, { method: "PATCH" }),
+      { params: Promise.resolve({ id: myConvId }) }
+    );
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { conversation: { id: string; title: string } };
+    assert.equal(body.conversation.id, myConvId);
+    assert.equal(body.conversation.title, "mine");
   });
 });
 

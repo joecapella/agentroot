@@ -13,7 +13,7 @@ process.env.AZURE_AI_PROJECT_ENDPOINT =
   process.env.AZURE_AI_PROJECT_ENDPOINT ??
   "https://example.invalid/api/projects/test";
 
-import { isValidResponseId, resolveEndpoint } from "@/src/foundryClient";
+import { isValidResponseId, resolveEndpoint, flattenEnvelope } from "@/src/foundryClient";
 import {
   inferTaskKind,
   LOGICAL_DEPLOYMENTS,
@@ -164,11 +164,65 @@ describe("openExternalUrl", () => {
   });
 });
 
+describe("flattenEnvelope multi-image", () => {
+  it("collects all completed image_generation_call results as JSON array", () => {
+    const env = {
+      id: "caresp_MULTI",
+      object: "response" as const,
+      status: "completed" as const,
+      error: null,
+      output: [
+        { type: "message", id: "m1", role: "assistant" as const, status: "completed" as const, content: [{ type: "output_text", text: "Here are 3 mockups." }] },
+        { type: "image_generation_call", id: "img1", status: "completed" as const, result: "base64_1" },
+        { type: "image_generation_call", id: "img2", status: "completed" as const, result: "base64_2" },
+        { type: "image_generation_call", id: "img3", status: "in_progress" as const },
+        { type: "image_generation_call", id: "img4", status: "completed" as const, result: "base64_4" },
+      ],
+    };
+    const flat = flattenEnvelope(env);
+    assert.equal(flat.text, "Here are 3 mockups.");
+    assert.ok(flat.imageBase64);
+    const parsed = JSON.parse(flat.imageBase64!);
+    assert.deepEqual(parsed, ["base64_1", "base64_2", "base64_4"]);
+  });
+
+  it("returns a single image as raw string (not JSON array)", () => {
+    const env = {
+      id: "caresp_SINGLE",
+      object: "response" as const,
+      status: "completed" as const,
+      error: null,
+      output: [
+        { type: "message", id: "m1", role: "assistant" as const, status: "completed" as const, content: [{ type: "output_text", text: "Done." }] },
+        { type: "image_generation_call", id: "img1", status: "completed" as const, result: "base64_only" },
+      ],
+    };
+    const flat = flattenEnvelope(env);
+    assert.equal(flat.imageBase64, "base64_only");
+  });
+
+  it("returns null imageBase64 when no images", () => {
+    const env = {
+      id: "caresp_NONE",
+      object: "response" as const,
+      status: "completed" as const,
+      error: null,
+      output: [
+        { type: "message", id: "m1", role: "assistant" as const, status: "completed" as const, content: [{ type: "output_text", text: "No images." }] },
+      ],
+    };
+    const flat = flattenEnvelope(env);
+    assert.equal(flat.imageBase64, null);
+  });
+});
+
 describe("azure.yaml deployment coverage", () => {
-  it("declares every available logical deployment the router may select", () => {
+  it("declares every available azure_openai deployment the router may select", () => {
+    // Only azure_openai-family deployments live in azure.yaml — direct
+    // providers (Gemini, Ollama, OpenRouter) are out-of-band by design.
     const yaml = readFileSync("azure.yaml", "utf-8");
     const missing = Object.values(LOGICAL_DEPLOYMENTS)
-      .filter((spec) => !spec.unavailable)
+      .filter((spec) => !spec.unavailable && spec.family === "azure_openai")
       .map((spec) => spec.deployment)
       .filter((deployment) => !yaml.includes(`name: ${deployment}`));
 

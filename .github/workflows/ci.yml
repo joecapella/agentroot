@@ -17,9 +17,9 @@ jobs:
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           pr-message: |
-            🎉 **Welcome to AgentRoot!**  
-            Thanks for your first PR. You're helping build the future of private AI coworking.  
-            We'll review this as fast as possible.  
+            🎉 **Welcome to AgentRoot!**
+            Thanks for your first PR. You're helping build the future of private AI coworking.
+            We'll review this as fast as possible.
             Questions? Join the discussion: https://github.com/joecapella/agentroot/discussions
 
   lint:

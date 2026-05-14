@@ -1,6 +1,6 @@
 ## 🚀 Description
 
-**What does this PR do?**  
+**What does this PR do?**
 Briefly describe the change and why it matters for the AgentRoot community.
 
 Closes #___

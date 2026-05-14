@@ -11,7 +11,7 @@ interface Props {
 }
 
 export function ActivityPanel({ tasks, onClose, onTaskChanged }: Props) {
-  const { approve, pending } = useApproveOpenUrl();
+  const { approve, pending, error } = useApproveOpenUrl();
   return (
     <aside style={drawer}>
       <div style={{ display: "flex", justifyContent: "space-between", padding: 12, borderBottom: "1px solid var(--border)" }}>
@@ -37,12 +37,21 @@ export function ActivityPanel({ tasks, onClose, onTaskChanged }: Props) {
                 style={{ marginTop: 6 }}
                 disabled={pending === t.id}
                 onClick={async () => {
-                  await approve(t.id);
-                  onTaskChanged();
+                  try {
+                    await approve(t.id);
+                    onTaskChanged();
+                  } catch (err) {
+                    console.error("Open URL approval failed:", err);
+                  }
                 }}
               >
                 {pending === t.id ? "Opening…" : "Approve & open"}
               </button>
+            )}
+            {error && (
+              <div style={{ color: "var(--danger)", fontSize: 11, marginTop: 4 }}>
+                Error: {error}
+              </div>
             )}
 
             <details style={{ marginTop: 4 }}>
