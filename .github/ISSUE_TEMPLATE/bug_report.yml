@@ -1,0 +1,62 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please fill in as much detail as possible.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What is the bug? What did you expect vs. what happened?
+      placeholder: |
+        I was trying to [action], but [unexpected behavior].
+        I expected [expected behavior].
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this?
+      placeholder: |
+        1. Start the dev server
+        2. Navigate to [page/feature]
+        3. Click on [button]
+        4. Observe [unexpected result]
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs
+      description: Any error messages, stack traces, or console output?
+      render: bash
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: OS, Node.js version, database, Python version, etc.
+      placeholder: |
+        - OS: Linux
+        - Node.js: 18.x
+        - npm: 9.x
+        - DATABASE_URL: file:./dev.db
+        - Python: 3.11
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched existing issues
+          required: true
+        - label: This bug is reproducible with latest main branch
+          required: true
