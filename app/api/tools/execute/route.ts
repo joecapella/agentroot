@@ -21,9 +21,10 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ExecuteBody = z.object({
-  toolName: z.string().min(1),
-  paramsJson: z.string().min(1),
+  toolName: z.string().min(1).optional(),
+  paramsJson: z.string().min(1).optional(),
   conversationId: z.string().optional(),
+  approvalId: z.string().optional(),
 });
 
 function getRepoRoot(): string {
@@ -44,31 +45,59 @@ export async function POST(req: NextRequest) {
       return sanitizedError("bad_request", 400, err, "tools.execute.parse");
     }
 
+    let toolName = body.toolName ?? "";
+    let paramsJson = body.paramsJson ?? "";
+    let executionId: string | null = null;
+
+    if (body.approvalId) {
+      const approval = await prisma.approval.findFirst({
+        where: { id: body.approvalId, userId: principal.userId },
+      });
+      if (!approval) {
+        return NextResponse.json({ error: "not_found" }, { status: 404 });
+      }
+      if (approval.status !== "approved") {
+        return NextResponse.json({ error: "approval_not_ready" }, { status: 409 });
+      }
+      if (!approval.toolExecutionId) {
+        return NextResponse.json({ error: "missing_execution" }, { status: 409 });
+      }
+      toolName = approval.toolName;
+      paramsJson = approval.paramsJson;
+      executionId = approval.toolExecutionId;
+    }
+
     const policy = await prisma.toolPolicy.findUnique({
-      where: { userId_toolName: { userId: principal.userId, toolName: body.toolName } },
+      where: { userId_toolName: { userId: principal.userId, toolName } },
     });
     const effectivePolicy = policy?.policy ?? "ask";
 
-    const execution = await prisma.toolExecution.create({
-      data: {
-        userId: principal.userId,
-        toolName: body.toolName,
-        status: effectivePolicy === "ask" ? "pending" : "autonomous",
-        paramsJson: body.paramsJson,
-      },
-    });
+    const execution = executionId
+      ? await prisma.toolExecution.findUnique({ where: { id: executionId } })
+      : await prisma.toolExecution.create({
+          data: {
+            userId: principal.userId,
+            toolName,
+            status: effectivePolicy === "ask" ? "pending" : "autonomous",
+            paramsJson,
+          },
+        });
+
+    if (!execution) {
+      return NextResponse.json({ error: "execution_not_found" }, { status: 404 });
+    }
 
     // Destructive operations always require approval regardless of policy.
     const alwaysApprove = ["read_file", "list_directory", "fetch_url", "grep", "find_files", "git_status", "git_diff", "git_log", "git_branch", "git_show"];
-    const needsApproval = !alwaysApprove.includes(body.toolName);
+    const needsApproval = !alwaysApprove.includes(toolName);
 
-    if (needsApproval && (effectivePolicy === "ask" || effectivePolicy === "readonly")) {
+    if (!body.approvalId && needsApproval && (effectivePolicy === "ask" || effectivePolicy === "readonly")) {
       const approval = await prisma.approval.create({
         data: {
           userId: principal.userId,
-          toolName: body.toolName,
-          description: `${body.toolName} requested`,
-          paramsJson: body.paramsJson,
+          toolName,
+          description: `${toolName} requested`,
+          paramsJson,
           status: "pending",
           toolExecutionId: execution.id,
         },
@@ -83,7 +112,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (effectivePolicy === "blocked") {
+    if (!body.approvalId && effectivePolicy === "blocked") {
       await prisma.toolExecution.update({
         where: { id: execution.id },
         data: { status: "blocked", completedAt: new Date() },
@@ -96,10 +125,10 @@ export async function POST(req: NextRequest) {
 
     let result: unknown;
     try {
-      const params = JSON.parse(body.paramsJson);
+      const params = JSON.parse(paramsJson);
       const repoRoot = getRepoRoot();
 
-      switch (body.toolName) {
+      switch (toolName) {
         case "read_file": {
           result = readFileTool({ path: params.path, repoRoot });
           break;
@@ -191,7 +220,7 @@ export async function POST(req: NextRequest) {
       });
 
       await logEvent(principal.userId, "tool_executed", {
-        toolName: body.toolName,
+        toolName,
         conversationId: body.conversationId,
       });
     } catch (err) {

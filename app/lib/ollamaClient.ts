@@ -294,3 +294,96 @@ export function setDefaultOllamaModel(model: string | null): void {
     // localStorage blocked; user will need to re-set on next session
   }
 }
+
+// ============================================================================
+// Tool calling support (OpenAI-compatible format that Ollama understands)
+// ============================================================================
+
+export interface OllamaTool {
+  type: "function";
+  function: {
+    name: string;
+    description: string;
+    parameters: {
+      type: "object";
+      properties: Record<string, { type: string; description?: string }>;
+      required?: string[];
+    };
+  };
+}
+
+export interface OllamaToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string; // JSON string
+  };
+}
+
+export interface OllamaChatWithToolsOptions extends OllamaChatOptions {
+  tools?: OllamaTool[];
+  tool_choice?: "auto" | "none" | { type: "function"; function: { name: string } };
+}
+
+export interface OllamaChatWithToolsResult extends OllamaChatResult {
+  toolCalls?: OllamaToolCall[];
+}
+
+/**
+ * Chat with tool calling support.
+ * Many local models (qwen2.5-coder, llama3.1, etc.) support this via the
+ * OpenAI-compatible /v1/chat/completions endpoint when you pass `tools`.
+ */
+export async function ollamaChatWithTools(
+  opts: OllamaChatWithToolsOptions,
+): Promise<OllamaChatWithToolsResult> {
+  const baseUrl = opts.baseUrl ?? getOllamaBaseUrl();
+  const startedAt = performance.now();
+
+  const body: {
+    model: string;
+    messages: OllamaChatOptions["messages"];
+    stream: boolean;
+    tools?: OllamaTool[];
+    tool_choice?: OllamaChatWithToolsOptions["tool_choice"];
+  } = {
+    model: opts.model,
+    messages: opts.messages,
+    stream: false, // tool calls are easier without streaming first
+    tools: opts.tools,
+    tool_choice: opts.tool_choice,
+  };
+
+  const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal: opts.signal,
+  });
+
+  if (!res.ok) {
+    throw new Error(`ollama_chat_tools_failed: HTTP ${res.status}`);
+  }
+
+  const json = await res.json();
+  const choice = json.choices?.[0];
+  const message = choice?.message;
+
+  const text = message?.content ?? "";
+  const toolCalls: OllamaToolCall[] = message?.tool_calls ?? [];
+
+  const promptTokens = json.usage?.prompt_tokens ?? 0;
+  const completionTokens = json.usage?.completion_tokens ?? 0;
+  const totalDurationMs = performance.now() - startedAt;
+
+  // If the model wants to call tools, we still return the text (if any)
+  // so the caller can decide whether to show intermediate text.
+  return {
+    text,
+    promptTokens,
+    completionTokens,
+    totalDurationMs,
+    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+  };
+}

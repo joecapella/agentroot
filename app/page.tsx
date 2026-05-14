@@ -60,7 +60,7 @@ function ChatPage() {
     useConversations(projectFilter, searchQuery);
   const { detail, reload: reloadDetail, error: detailError } =
     useConversationDetail(activeId);
-  const { send, sending, error: sendError, streamState, abort } = useSendMessage();
+  const { send, sending, error: sendError, streamState, abort, handleLocalApproval } = useSendMessage();
   const { items: facts, reload: reloadFacts } = useFacts();
   const { projects: serverProjects, reload: reloadProjects } = useProjects();
   const { items: workspaces, reload: reloadWorkspaces } = useProjectWorkspaces();
@@ -226,6 +226,7 @@ function ChatPage() {
           onApprove={async (id) => {
             try {
               await resolveApproval(id, "approved");
+              await handleLocalApproval?.(id);
             } catch (err) {
               console.error("Approval failed:", err);
             }

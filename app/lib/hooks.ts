@@ -6,6 +6,9 @@ import {
   detectOllama,
   getDefaultOllamaModel,
   ollamaChat,
+  ollamaChatWithTools,
+  type OllamaTool,
+  type OllamaToolCall,
 } from "./ollamaClient";
 import type {
   ConversationDetail,
@@ -18,6 +21,222 @@ import type {
   ToolsMode,
   UserProfileRow,
 } from "./types";
+
+// Tool schema the local model can call
+const CREATE_TODO_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "create_todo",
+    description: "Create a new task / todo item for the user. Use this when the user asks you to remember or schedule something.",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short title of the task" },
+        description: { type: "string", description: "Optional longer description" },
+        priority: { type: "string", description: "low | medium | high" },
+      },
+      required: ["title"],
+    },
+  },
+};
+
+const READ_FILE_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "read_file",
+    description: "Read a text file by path (relative to repo root).",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative path to the file" },
+      },
+      required: ["path"],
+    },
+  },
+};
+
+const LIST_DIRECTORY_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "list_directory",
+    description: "List files and directories at a path.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative path, default '.'" },
+      },
+      required: [],
+    },
+  },
+};
+
+const WRITE_FILE_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "write_file",
+    description: "Write content to a file. REQUIRES APPROVAL.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative file path" },
+        content: { type: "string", description: "Full new file content" },
+      },
+      required: ["path", "content"],
+    },
+  },
+};
+
+const SEARCH_REPLACE_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "search_replace",
+    description: "Replace the first occurrence of search with replace. REQUIRES APPROVAL.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string" },
+        search: { type: "string" },
+        replace: { type: "string" },
+      },
+      required: ["path", "search", "replace"],
+    },
+  },
+};
+
+const GREP_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "grep",
+    description: "Search code for a pattern.",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: { type: "string" },
+        path: { type: "string" },
+        max_results: { type: "integer" },
+      },
+      required: ["pattern"],
+    },
+  },
+};
+
+const FIND_FILES_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "find_files",
+    description: "Find files by glob pattern.",
+    parameters: {
+      type: "object",
+      properties: {
+        pattern: { type: "string" },
+        max_results: { type: "integer" },
+      },
+      required: ["pattern"],
+    },
+  },
+};
+
+const GIT_STATUS_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "git_status",
+    description: "Get git status (short).",
+    parameters: {
+      type: "object",
+      properties: { cwd: { type: "string" } },
+      required: [],
+    },
+  },
+};
+
+const GIT_DIFF_TOOL: OllamaTool = {
+  type: "function",
+  function: {
+    name: "git_diff",
+    description: "Get git diff against target.",
+    parameters: {
+      type: "object",
+      properties: { cwd: { type: "string" }, target: { type: "string" } },
+      required: [],
+    },
+  },
+};
+
+const LOCAL_TOOL_DEFS: OllamaTool[] = [
+  CREATE_TODO_TOOL,
+  READ_FILE_TOOL,
+  LIST_DIRECTORY_TOOL,
+  WRITE_FILE_TOOL,
+  SEARCH_REPLACE_TOOL,
+  GREP_TOOL,
+  FIND_FILES_TOOL,
+  GIT_STATUS_TOOL,
+  GIT_DIFF_TOOL,
+];
+
+type ToolExecResult =
+  | { status: "ok"; output: string; diff?: string; rollbackDir?: string }
+  | { status: "awaiting_approval"; approvalId: string; description: string }
+  | { status: "error"; error: string };
+
+async function executeToolCall(
+  toolCall: OllamaToolCall,
+  conversationId?: string | null,
+): Promise<ToolExecResult> {
+  const name = toolCall.function.name;
+  let args: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(toolCall.function.arguments || "{}");
+  } catch {
+    return { status: "error", error: "invalid_arguments" };
+  }
+
+  if (name === "create_todo") {
+    try {
+      const res = await api<{ id: string; title: string }>("/api/tools/create_todo", {
+        method: "POST",
+        body: {
+          title: typeof args.title === "string" ? args.title : "Untitled",
+          description: typeof args.description === "string" ? args.description : undefined,
+          priority:
+            typeof args.priority === "string" ? args.priority : "medium",
+        },
+      });
+      return { status: "ok", output: JSON.stringify({ success: true, todoId: res.id, title: res.title }) };
+    } catch (err) {
+      return { status: "error", error: String(err) };
+    }
+  }
+
+  try {
+    const payload = {
+      toolName: name,
+      paramsJson: JSON.stringify(args),
+      conversationId: conversationId ?? undefined,
+    };
+    const res = await api<{ status: string; approvalId?: string; result?: Record<string, unknown> }>("/api/tools/execute", {
+      method: "POST",
+      body: payload,
+    });
+
+    if (res.status === "awaiting_approval" && res.approvalId) {
+      return { status: "awaiting_approval", approvalId: res.approvalId, description: `${name} requested` };
+    }
+
+    if (res.status === "completed") {
+      return {
+        status: "ok",
+        output: JSON.stringify(res.result ?? {}),
+        diff: typeof res.result?.diff === "string" ? res.result.diff : undefined,
+        rollbackDir: typeof res.result?.rollbackDir === "string" ? res.result.rollbackDir : undefined,
+      };
+    }
+
+    return { status: "error", error: `tool_failed:${res.status}` };
+  } catch (err) {
+    return { status: "error", error: String(err) };
+  }
+}
 
 export function useProjects() {
   const [projects, setProjects] = useState<string[]>([]);
@@ -136,8 +355,11 @@ async function sendViaOllama(args: {
   modelName: string;
   signal: AbortSignal;
   onToken?: (delta: string) => void;
+  onToolCall?: (tool: { name: string; arguments: string; call_id: string }) => void;
+  onToolResult?: (result: { call_id: string; name: string; output: string; status: string; diff?: string; rollbackDir?: string }) => void;
+  onApprovalRequired?: (approval: { call_id: string; name: string; approvalId: string; description: string; paramsJson: string }) => void;
 }): Promise<SendResult | null> {
-  const { args: req, modelName, signal, onToken } = args;
+  const { args: req, modelName, signal, onToken, onToolCall, onToolResult, onApprovalRequired } = args;
   if (signal.aborted) throw new Error("Aborted by user");
 
   // Compose Ollama messages. We keep this minimal in v1 — no full
@@ -147,13 +369,30 @@ async function sendViaOllama(args: {
   // (Ollama doesn't see our `agent-config/*.prompt.md` system prompts
   // unless we send them); we ship a short, generic system line.
   const systemPrompt =
-    "You are a helpful coworker assistant. Answer concisely and execute the user's request directly when possible. No emoji unless the user uses them first.";
+    "You are a helpful coworker assistant. Answer concisely and execute the user's request directly when possible. " +
+    "You can call tools to read files, search, and edit the repo. " +
+    "Any destructive action (write_file, search_replace) requires human approval; ask for it by calling the tool anyway and wait. " +
+    "No emoji unless the user uses them first.";
 
   const userText = req.message;
 
-  let chatResult;
+  // Try tool-aware call first (many coding models support it)
+  let chatResult: Awaited<ReturnType<typeof ollamaChatWithTools>>;
   try {
-    chatResult = await ollamaChat({
+    chatResult = await ollamaChatWithTools({
+      model: modelName,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userText },
+      ],
+      tools: LOCAL_TOOL_DEFS,
+      tool_choice: "auto",
+      signal,
+    });
+  } catch (err) {
+    if (signal.aborted) throw new Error("Aborted by user");
+    // Fallback to plain chat if the model doesn't support tools
+    chatResult = (await ollamaChat({
       model: modelName,
       messages: [
         { role: "system", content: systemPrompt },
@@ -161,10 +400,50 @@ async function sendViaOllama(args: {
       ],
       signal,
       onToken,
-    });
-  } catch (err) {
-    if (signal.aborted) throw new Error("Aborted by user");
-    throw err;
+    })) as Awaited<ReturnType<typeof ollamaChatWithTools>>;
+  }
+
+  // Execute any tool calls the model requested
+  if (chatResult.toolCalls && chatResult.toolCalls.length > 0) {
+    for (const tc of chatResult.toolCalls) {
+      const callId = tc.id || tc.function.name + "_" + Date.now();
+      onToolCall?.({ name: tc.function.name, arguments: tc.function.arguments, call_id: callId });
+      const result = await executeToolCall(tc, req.conversationId);
+      if (result.status === "awaiting_approval") {
+        onApprovalRequired?.({
+          call_id: callId,
+          name: tc.function.name,
+          approvalId: result.approvalId,
+          description: result.description,
+          paramsJson: tc.function.arguments,
+        });
+        chatResult.text =
+          (chatResult.text ? chatResult.text + "\n\n" : "") +
+          `Approval required for ${tc.function.name}.`;
+      } else if (result.status === "ok") {
+        onToolResult?.({
+          call_id: callId,
+          name: tc.function.name,
+          output: result.output,
+          status: "ok",
+          diff: result.diff,
+          rollbackDir: result.rollbackDir,
+        });
+        chatResult.text =
+          (chatResult.text ? chatResult.text + "\n\n" : "") +
+          `Tool result (${tc.function.name}): ${result.output}`;
+      } else {
+        onToolResult?.({
+          call_id: callId,
+          name: tc.function.name,
+          output: result.error,
+          status: "error",
+        });
+        chatResult.text =
+          (chatResult.text ? chatResult.text + "\n\n" : "") +
+          `Tool error (${tc.function.name}): ${result.error}`;
+      }
+    }
   }
 
   // POST finalized turn for persistence. If this fails the UI still
@@ -216,6 +495,9 @@ export function useSendMessage() {
     loopCount: 0,
   });
   const abortRef = useRef<AbortController | null>(null);
+  const localApprovalsRef = useRef<
+    Map<string, { call_id: string; name: string; paramsJson: string }>
+  >(new Map());
 
   const abort = useCallback(() => {
     if (abortRef.current) {
@@ -264,6 +546,40 @@ export function useSendMessage() {
                   imageBase64: null,
                   persona: args.persona ?? null,
                 },
+              }));
+            },
+            onToolCall: (tool) => {
+              setStreamState((prev) => ({
+                ...prev,
+                toolCalls: [...prev.toolCalls, tool],
+                status: `running ${tool.name}...`,
+              }));
+            },
+            onToolResult: (result) => {
+              setStreamState((prev) => ({
+                ...prev,
+                toolResults: [...prev.toolResults, result],
+                status: `${result.name} done`,
+              }));
+            },
+            onApprovalRequired: (approval) => {
+              localApprovalsRef.current.set(approval.approvalId, {
+                call_id: approval.call_id,
+                name: approval.name,
+                paramsJson: approval.paramsJson,
+              });
+              setStreamState((prev) => ({
+                ...prev,
+                approvalsRequired: [
+                  ...prev.approvalsRequired,
+                  {
+                    call_id: approval.call_id,
+                    name: approval.name,
+                    approvalId: approval.approvalId,
+                    description: approval.description,
+                  },
+                ],
+                status: `approval required: ${approval.name}`,
               }));
             },
           });
@@ -405,7 +721,37 @@ export function useSendMessage() {
     }
   }, []);
 
-  return { send, sending, error, streamState, abort };
+  const handleLocalApproval = useCallback(async (approvalId: string) => {
+    if (!localApprovalsRef.current.has(approvalId)) return;
+    try {
+      const res = await api<{ status: string; result?: Record<string, unknown> }>("/api/tools/execute", {
+        method: "POST",
+        body: { approvalId },
+      });
+
+      if (res.status === "completed") {
+        setStreamState((prev) => ({
+          ...prev,
+          approvalsRequired: prev.approvalsRequired.filter((a) => a.approvalId !== approvalId),
+          toolResults: [
+            ...prev.toolResults,
+            {
+              call_id: localApprovalsRef.current.get(approvalId)?.call_id ?? approvalId,
+              name: localApprovalsRef.current.get(approvalId)?.name ?? "tool",
+              output: JSON.stringify(res.result ?? {}),
+              status: "ok",
+              diff: typeof res.result?.diff === "string" ? res.result.diff : undefined,
+              rollbackDir: typeof res.result?.rollbackDir === "string" ? res.result.rollbackDir : undefined,
+            },
+          ],
+        }));
+      }
+    } finally {
+      localApprovalsRef.current.delete(approvalId);
+    }
+  }, []);
+
+  return { send, sending, error, streamState, abort, handleLocalApproval };
 }
 
 export function useApproveOpenUrl() {
