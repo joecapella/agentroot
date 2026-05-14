@@ -18,6 +18,8 @@ import {
   inferTaskKind,
   LOGICAL_DEPLOYMENTS,
   pickChatModelForTask,
+  resolveRouteForTaskWithOverrides,
+  pickChatModelForTaskWithOverrides,
 } from "@/src/modelRouting";
 import { openExternalUrl } from "@/src/server/openExternalUrl";
 
@@ -227,6 +229,56 @@ describe("azure.yaml deployment coverage", () => {
       .filter((deployment) => !yaml.includes(`name: ${deployment}`));
 
     assert.deepEqual(missing, []);
+  });
+});
+
+describe("resolveRouteForTaskWithOverrides", () => {
+  it("returns default route when no overrides provided", () => {
+    const route = resolveRouteForTaskWithOverrides("general_chat");
+    assert.equal(route.deployment, "gpt-5.5");
+  });
+
+  it("returns overridden model when valid override exists", () => {
+    const route = resolveRouteForTaskWithOverrides("general_chat", {
+      general_chat: "deepseek-v4-flash",
+    });
+    assert.equal(route.deployment, "DeepSeek-V4-Flash");
+  });
+
+  it("falls back to default when override is unavailable", () => {
+    const route = resolveRouteForTaskWithOverrides("general_chat", {
+      general_chat: "claude-opus-4-7", // marked unavailable
+    });
+    assert.equal(route.deployment, "gpt-5.5");
+  });
+
+  it("falls back to default when override is null", () => {
+    const route = resolveRouteForTaskWithOverrides("general_chat", {
+      general_chat: null,
+    });
+    assert.equal(route.deployment, "gpt-5.5");
+  });
+});
+
+describe("pickChatModelForTaskWithOverrides", () => {
+  it("picks default chat model when no overrides", () => {
+    const route = pickChatModelForTaskWithOverrides("general_chat");
+    assert.equal(route.deployment, "gpt-5.5");
+    assert.ok(route.family === "azure_openai" || route.family === "direct_openai");
+  });
+
+  it("picks overridden chat-capable model", () => {
+    const route = pickChatModelForTaskWithOverrides("fast_brainstorm", {
+      fast_brainstorm: "deepseek-v4-flash",
+    });
+    assert.equal(route.deployment, "DeepSeek-V4-Flash");
+  });
+
+  it("falls back when override is image_gen (non-chat)", () => {
+    const route = pickChatModelForTaskWithOverrides("general_chat", {
+      general_chat: "gpt-image-2", // image_gen family, not chat-capable
+    });
+    assert.equal(route.deployment, "gpt-5.5");
   });
 });
 

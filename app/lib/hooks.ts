@@ -172,6 +172,78 @@ const LOCAL_TOOL_DEFS: OllamaTool[] = [
   FIND_FILES_TOOL,
   GIT_STATUS_TOOL,
   GIT_DIFF_TOOL,
+  {
+    type: "function",
+    function: {
+      name: "git_log",
+      description: "Get git log.",
+      parameters: { type: "object", properties: { cwd: { type: "string" }, n: { type: "integer" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_branch",
+      description: "List git branches.",
+      parameters: { type: "object", properties: { cwd: { type: "string" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "git_show",
+      description: "Show a git object.",
+      parameters: { type: "object", properties: { cwd: { type: "string" }, ref: { type: "string" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_command",
+      description: "Run a shell command. REQUIRES APPROVAL unless local freedom is enabled.",
+      parameters: { type: "object", properties: { command: { type: "string" }, cwd: { type: "string" }, timeoutMs: { type: "integer" } }, required: ["command"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "fetch_url",
+      description: "Fetch a URL and return cleaned text.",
+      parameters: { type: "object", properties: { url: { type: "string" }, maxChars: { type: "integer" } }, required: ["url"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "open_url",
+      description: "Open a URL in the browser.",
+      parameters: { type: "object", properties: { url: { type: "string" }, reason: { type: "string" } }, required: ["url"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "calendar_create",
+      description: "Create a calendar event draft.",
+      parameters: { type: "object", properties: { title: { type: "string" }, description: { type: "string" }, startAt: { type: "string" }, endAt: { type: "string" }, timezone: { type: "string" } }, required: ["title", "startAt"] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "calendar_list",
+      description: "List upcoming calendar events.",
+      parameters: { type: "object", properties: { limit: { type: "integer" } }, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "http_request",
+      description: "Send an HTTP request to any API (Slack, Notion, Email, etc.).",
+      parameters: { type: "object", properties: { url: { type: "string" }, method: { type: "string" }, headers: { type: "object" }, body: { type: "string" } }, required: ["url"] },
+    },
+  },
 ];
 
 type ToolExecResult =
@@ -182,6 +254,7 @@ type ToolExecResult =
 async function executeToolCall(
   toolCall: OllamaToolCall,
   conversationId?: string | null,
+  overridePolicy?: "allow_all",
 ): Promise<ToolExecResult> {
   const name = toolCall.function.name;
   let args: Record<string, unknown> = {};
@@ -208,11 +281,34 @@ async function executeToolCall(
     }
   }
 
+  if (name === "open_url") {
+    try {
+      const res = await api<{ taskId: string; status: string }>("/api/tools/open_url", {
+        method: "POST",
+        body: {
+          url: typeof args.url === "string" ? args.url : "",
+          reason: typeof args.reason === "string" ? args.reason : undefined,
+          conversationId: conversationId ?? undefined,
+        },
+      });
+
+      if (overridePolicy === "allow_all") {
+        await api(`/api/tools/open_url/approve/${res.taskId}`, { method: "POST" });
+        return { status: "ok", output: JSON.stringify({ opened: true, taskId: res.taskId }) };
+      }
+
+      return { status: "awaiting_approval", approvalId: res.taskId, description: "open_url requested" };
+    } catch (err) {
+      return { status: "error", error: String(err) };
+    }
+  }
+
   try {
     const payload = {
       toolName: name,
       paramsJson: JSON.stringify(args),
       conversationId: conversationId ?? undefined,
+      overridePolicy,
     };
     const res = await api<{ status: string; approvalId?: string; result?: Record<string, unknown> }>("/api/tools/execute", {
       method: "POST",
@@ -358,8 +454,9 @@ async function sendViaOllama(args: {
   onToolCall?: (tool: { name: string; arguments: string; call_id: string }) => void;
   onToolResult?: (result: { call_id: string; name: string; output: string; status: string; diff?: string; rollbackDir?: string }) => void;
   onApprovalRequired?: (approval: { call_id: string; name: string; approvalId: string; description: string; paramsJson: string }) => void;
+  overridePolicy?: "allow_all";
 }): Promise<SendResult | null> {
-  const { args: req, modelName, signal, onToken, onToolCall, onToolResult, onApprovalRequired } = args;
+  const { args: req, modelName, signal, onToken, onToolCall, onToolResult, onApprovalRequired, overridePolicy } = args;
   if (signal.aborted) throw new Error("Aborted by user");
 
   // Compose Ollama messages. We keep this minimal in v1 — no full
@@ -370,8 +467,8 @@ async function sendViaOllama(args: {
   // unless we send them); we ship a short, generic system line.
   const systemPrompt =
     "You are a helpful coworker assistant. Answer concisely and execute the user's request directly when possible. " +
-    "You can call tools to read files, search, and edit the repo. " +
-    "Any destructive action (write_file, search_replace) requires human approval; ask for it by calling the tool anyway and wait. " +
+    "You can call tools to read files, search, edit the repo, run commands, open URLs, and make HTTP requests to external APIs. " +
+    "Destructive actions normally require approval unless local freedom mode is enabled by the user. " +
     "No emoji unless the user uses them first.";
 
   const userText = req.message;
@@ -408,7 +505,7 @@ async function sendViaOllama(args: {
     for (const tc of chatResult.toolCalls) {
       const callId = tc.id || tc.function.name + "_" + Date.now();
       onToolCall?.({ name: tc.function.name, arguments: tc.function.arguments, call_id: callId });
-      const result = await executeToolCall(tc, req.conversationId);
+      const result = await executeToolCall(tc, req.conversationId, overridePolicy);
       if (result.status === "awaiting_approval") {
         onApprovalRequired?.({
           call_id: callId,
@@ -533,6 +630,14 @@ export function useSendMessage() {
       const detect = await detectOllama();
       if (detect.reachable) {
         try {
+          const localFreedom = (() => {
+            try {
+              return window.localStorage.getItem("local.tools.fullAccess") !== "false";
+            } catch {
+              return true;
+            }
+          })();
+
           const result = await sendViaOllama({
             args,
             modelName: ollamaModel,
@@ -582,6 +687,7 @@ export function useSendMessage() {
                 status: `approval required: ${approval.name}`,
               }));
             },
+            overridePolicy: localFreedom ? "allow_all" : undefined,
           });
           return result;
         } catch (err) {
@@ -997,4 +1103,155 @@ export function usePlans(opts: { conversationId?: string | null; activeOnly?: bo
   }, [reload]);
 
   return { plans, reload, error, loading };
+}
+
+// ----------------------------------------------------------------------------
+// Settings hooks
+// ----------------------------------------------------------------------------
+
+export interface ToolPolicyRow {
+  toolName: string;
+  category: string;
+  description: string;
+  policy: "ask" | "allowed" | "blocked" | "readonly";
+}
+
+export function useToolPolicies() {
+  const [policies, setPolicies] = useState<ToolPolicyRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const data = await api<{ policies: ToolPolicyRow[] }>("/api/tool-policies");
+      setPolicies(data.policies);
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    }
+  }, []);
+
+  const save = useCallback(async (updates: Array<{ toolName: string; policy: ToolPolicyRow["policy"] }>) => {
+    setLoading(true);
+    try {
+      await api<{ saved: number }>("/api/tool-policies", {
+        method: "PUT",
+        body: { policies: updates },
+      });
+      await reload();
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [reload]);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return { policies, reload, save, loading, error };
+}
+
+export interface ModelRoutingState {
+  overrides: Record<string, string | null>;
+  defaults: Record<string, { defaultModel: string; fallback?: string; secondFallback?: string }>;
+  availableModels: string[];
+}
+
+export function useModelRoutingOverrides() {
+  const [state, setState] = useState<ModelRoutingState>({
+    overrides: {},
+    defaults: {},
+    availableModels: [],
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(async () => {
+    try {
+      const data = await api<ModelRoutingState>("/api/settings/routing");
+      setState(data);
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    }
+  }, []);
+
+  const save = useCallback(async (overrides: Record<string, string | null>) => {
+    setLoading(true);
+    try {
+      const data = await api<{ overrides: Record<string, string> }>("/api/settings/routing", {
+        method: "PUT",
+        body: { overrides },
+      });
+      setState((prev) => ({ ...prev, overrides: data.overrides }));
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+
+  return { ...state, reload, save, loading, error };
+}
+
+export function useSettingsExport() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const exportData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api<{ data: unknown }>("/api/settings/export", { method: "POST" });
+      const blob = new Blob([JSON.stringify(data.data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `agentroot-export-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { exportData, loading, error };
+}
+
+export function useSettingsClear() {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const clear = useCallback(async (type: "conversations" | "facts" | "executions" | "approvals" | "projects" | "all", confirmation: string) => {
+    setLoading(true);
+    try {
+      await api<{ cleared: string; deleted: number }>("/api/settings/clear", {
+        method: "POST",
+        body: { type, confirmation },
+      });
+      setError(null);
+    } catch (err) {
+      if (err instanceof ApiError) setError(`${err.code} (${err.status})`);
+      else setError(String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return { clear, loading, error };
 }

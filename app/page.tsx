@@ -18,6 +18,7 @@ import {
   useConversations,
   useFacts,
   usePlans,
+  useProfile,
   useProjectWorkspaces,
   useProjects,
   useRegenerateTitle,
@@ -43,8 +44,9 @@ function ChatPage() {
   const [projectFilter, setProjectFilter] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [reasoning, setReasoning] = useState<ReasoningProfile>("balanced");
-  const [tools, setTools] = useState<ToolsMode>("allowed");
+  const [tools, setTools] = useState<ToolsMode>("ask");
   const [persona, setPersona] = useState<Persona | "auto">("auto");
+  const { profile } = useProfile();
   const [imageQuality, setImageQuality] = useState<ImageQuality>("auto");
   const [imageSize, setImageSize] = useState<ImageSize>("auto");
   const [draft, setDraft] = useState("");
@@ -62,6 +64,21 @@ function ChatPage() {
     useConversationDetail(activeId);
   const { send, sending, error: sendError, streamState, abort, handleLocalApproval } = useSendMessage();
   const { items: facts, reload: reloadFacts } = useFacts();
+
+  // Load defaults from user profile when available
+  useEffect(() => {
+    if (!profile) return;
+    if (profile.defaultReasoning) setReasoning(profile.defaultReasoning);
+    if (profile.defaultTools) setTools(profile.defaultTools);
+    if (profile.defaultPersona) setPersona(profile.defaultPersona);
+    try {
+      const prefs = JSON.parse(profile.preferencesJson || "{}");
+      if (prefs.defaultImageQuality) setImageQuality(prefs.defaultImageQuality);
+      if (prefs.defaultImageSize) setImageSize(prefs.defaultImageSize);
+    } catch {
+      // ignore malformed json
+    }
+  }, [profile]);
   const { projects: serverProjects, reload: reloadProjects } = useProjects();
   const { items: workspaces, reload: reloadWorkspaces } = useProjectWorkspaces();
   const { regenerate: regenerateTitle } = useRegenerateTitle();

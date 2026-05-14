@@ -249,6 +249,50 @@ export function resolveRouteForTask(task: TaskKind): DeploymentSpec {
   return last;
 }
 
+/**
+ * Resolve a route with user-defined overrides. Overrides are stored in
+ * UserProfile.preferencesJson and applied server-side. If the user has
+ * overridden a task kind to a specific logical model, we use that model
+ * directly (skipping the hardcoded route chain). Otherwise we fall back
+ * to the normal `resolveRouteForTask` behavior.
+ */
+export function resolveRouteForTaskWithOverrides(
+  task: TaskKind,
+  overrides?: Record<string, string | null>
+): DeploymentSpec {
+  if (overrides && overrides[task]) {
+    const logical = overrides[task];
+    if (logical) {
+      const spec = resolveAvailable(logical);
+      if (spec) return spec;
+    }
+  }
+  return resolveRouteForTask(task);
+}
+
+/**
+ * Pick the chat model for a task, respecting user overrides.
+ * This is the drop-in replacement for `pickChatModelForTask` when
+ * the caller has access to the user's profile preferences.
+ */
+export function pickChatModelForTaskWithOverrides(
+  task: TaskKind,
+  overrides?: Record<string, string | null>
+): DeploymentSpec {
+  // If user has overridden this task, try their choice first, then fall
+  // through the normal chain.
+  if (overrides && overrides[task]) {
+    const logical = overrides[task];
+    if (logical) {
+      const spec = resolveAvailable(logical);
+      if (spec && (spec.family === "azure_openai" || spec.family === "direct_openai")) {
+        return spec;
+      }
+    }
+  }
+  return pickChatModelForTask(task);
+}
+
 // ---------------------------------------------------------------------------
 // Heuristics
 // ---------------------------------------------------------------------------

@@ -12,7 +12,8 @@
     "db:studio": "prisma studio",
     "db:generate": "prisma generate",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 'tests/**/*.test.ts'"
+    "test": "node --import tsx --test --test-concurrency=1 tests/**/*.test.ts",
+    "test:coverage": "c8 -r lcov -r text-summary -o coverage node --import tsx --test --test-concurrency=1 tests/**/*.test.ts"
   },
   "dependencies": {
     "@azure/identity": "^4.5.0",
@@ -32,6 +33,7 @@
     "@types/node": "^22.10.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "c8": "^9.1.0",
     "eslint": "^9.39.1",
     "eslint-config-next": "^15.5.18",
     "prisma": "^6.0.1",

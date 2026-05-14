@@ -14,7 +14,7 @@ import {
   inferTaskKind,
   personaForTask,
   pickByokChatModel,
-  pickChatModelForTask,
+  pickChatModelForTaskWithOverrides,
   type DeploymentSpec,
   type Persona,
   type TaskKind,
@@ -26,7 +26,7 @@ import {
   requireSameOriginHeader,
 } from "@/src/server/auth";
 import { runRoute, sanitizedError } from "@/src/server/errors";
-import { getMemoryPreamble, createFact } from "@/src/memory";
+import { getMemoryPreamble, createFact, getOrCreateProfile } from "@/src/memory";
 import { extractAndStripFacts } from "@/src/server/factExtractor";
 import { runReActLoop, type LoopEvent } from "@/src/server/agentLoop";
 import { recordTokenUsage } from "@/src/server/tokenTracker";
@@ -146,13 +146,26 @@ export async function POST(req: NextRequest) {
 
     taskKind = inferTaskKind(message, { reasoning: reasoningProfile, persona });
     effectivePersona = persona ?? personaForTask(taskKind);
+
+    // Load user profile for routing overrides and defaults.
+    const profile = await getOrCreateProfile(principal.userId);
+    let routingOverrides: Record<string, string | null> = {};
+    try {
+      const prefs = JSON.parse(profile.preferencesJson || "{}");
+      if (prefs.modelRoutingOverrides && typeof prefs.modelRoutingOverrides === "object") {
+        routingOverrides = prefs.modelRoutingOverrides;
+      }
+    } catch {
+      // ignore malformed json
+    }
+
     // BYOK routing: if the request carries a user-supplied provider key,
     // route directly to that provider with the user's key. Otherwise
     // fall back to the default Foundry-hosted path. Keys live in the
     // browser's localStorage and are sent per-request; the server NEVER
     // persists them.
     const byok = pickByokChatModel(parsed.userKeys ?? null, taskKind);
-    route = byok ?? pickChatModelForTask(taskKind);
+    route = byok ?? pickChatModelForTaskWithOverrides(taskKind, routingOverrides);
     // Hot-loaded persona prompt + memory preamble.
     //
     // We deliberately do NOT send these as the Responses-protocol

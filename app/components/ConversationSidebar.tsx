@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { ConversationSummary } from "../lib/types";
 import { sidebar } from "./styles";
 
@@ -80,6 +81,27 @@ export function ConversationSidebar({
             </div>
           </div>
         ))}
+      </div>
+      <div
+        style={{
+          padding: "10px 14px",
+          borderTop: "1px solid var(--border)",
+          fontSize: 12,
+        }}
+      >
+        <Link
+          href="/settings"
+          style={{
+            color: "var(--text-dim)",
+            textDecoration: "none",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <span>⚙</span>
+          <span>Settings</span>
+        </Link>
       </div>
     </aside>
   );

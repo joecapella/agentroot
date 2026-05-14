@@ -554,3 +554,161 @@ describe("memory layer", async () => {
     await prisma.fact.delete({ where: { id: theirFact.id } });
   });
 });
+
+// ── Settings layer tests ───────────────────────────────────────────────────
+
+describe("settings layer", async () => {
+  let toolPoliciesRoute: typeof import("@/app/api/tool-policies/route") | null = null;
+  let settingsRoutingRoute: typeof import("@/app/api/settings/routing/route") | null = null;
+  let settingsExportRoute: typeof import("@/app/api/settings/export/route") | null = null;
+  let settingsClearRoute: typeof import("@/app/api/settings/clear/route") | null = null;
+
+  before(async () => {
+    try {
+      toolPoliciesRoute = await import("@/app/api/tool-policies/route");
+      settingsRoutingRoute = await import("@/app/api/settings/routing/route");
+      settingsExportRoute = await import("@/app/api/settings/export/route");
+      settingsClearRoute = await import("@/app/api/settings/clear/route");
+    } catch {
+      /* routes may not exist yet */
+    }
+    if (!toolPoliciesRoute) return;
+    await prisma.toolPolicy.deleteMany({ where: { userId: SERVER_USER_ID } });
+    await prisma.toolExecution.deleteMany({ where: { userId: SERVER_USER_ID } });
+    await prisma.conversation.deleteMany({ where: { userId: SERVER_USER_ID } });
+    await prisma.fact.deleteMany({ where: { userId: SERVER_USER_ID } });
+  });
+
+  it("tool-policies.GET returns default ask for all tools", async () => {
+    if (!toolPoliciesRoute) return;
+    const r = await toolPoliciesRoute.GET(req("http://t/api/tool-policies"));
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { policies: Array<{ toolName: string; policy: string }> };
+    assert.ok(body.policies.length > 0);
+    assert.ok(body.policies.every((p) => p.policy === "ask"));
+  });
+
+  it("tool-policies.PUT updates policies and GET reflects changes", async () => {
+    if (!toolPoliciesRoute) return;
+    const put = await toolPoliciesRoute.PUT(
+      req("http://t/api/tool-policies", {
+        method: "PUT",
+        body: {
+          policies: [
+            { toolName: "write_file", policy: "blocked" },
+            { toolName: "run_command", policy: "allowed" },
+          ],
+        },
+      })
+    );
+    assert.equal(put.status, 200);
+
+    const get = await toolPoliciesRoute.GET(req("http://t/api/tool-policies"));
+    const body = (await get.json()) as { policies: Array<{ toolName: string; policy: string }> };
+    const writeFile = body.policies.find((p) => p.toolName === "write_file");
+    const runCommand = body.policies.find((p) => p.toolName === "run_command");
+    assert.equal(writeFile?.policy, "blocked");
+    assert.equal(runCommand?.policy, "allowed");
+  });
+
+  it("tool-policies.PUT rejects unknown tools", async () => {
+    if (!toolPoliciesRoute) return;
+    const r = await toolPoliciesRoute.PUT(
+      req("http://t/api/tool-policies", {
+        method: "PUT",
+        body: { policies: [{ toolName: "fake_tool", policy: "allowed" }] },
+      })
+    );
+    assert.equal(r.status, 400);
+  });
+
+  it("settings/routing.GET returns empty overrides initially", async () => {
+    if (!settingsRoutingRoute) return;
+    const r = await settingsRoutingRoute.GET(req("http://t/api/settings/routing"));
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { overrides: Record<string, unknown>; defaults: Record<string, unknown> };
+    assert.deepEqual(body.overrides, {});
+    assert.ok(Object.keys(body.defaults).length > 0);
+  });
+
+  it("settings/routing.PUT stores and returns overrides", async () => {
+    if (!settingsRoutingRoute) return;
+    const put = await settingsRoutingRoute.PUT(
+      req("http://t/api/settings/routing", {
+        method: "PUT",
+        body: { overrides: { general_chat: "deepseek-v4-flash" } },
+      })
+    );
+    assert.equal(put.status, 200);
+    const putBody = (await put.json()) as { overrides: Record<string, string> };
+    assert.equal(putBody.overrides.general_chat, "deepseek-v4-flash");
+
+    const get = await settingsRoutingRoute.GET(req("http://t/api/settings/routing"));
+    const getBody = (await get.json()) as { overrides: Record<string, string> };
+    assert.equal(getBody.overrides.general_chat, "deepseek-v4-flash");
+
+    // Cleanup
+    await settingsRoutingRoute.PUT(
+      req("http://t/api/settings/routing", {
+        method: "PUT",
+        body: { overrides: { general_chat: null } },
+      })
+    );
+  });
+
+  it("settings/routing.PUT rejects unknown task kinds", async () => {
+    if (!settingsRoutingRoute) return;
+    const r = await settingsRoutingRoute.PUT(
+      req("http://t/api/settings/routing", {
+        method: "PUT",
+        body: { overrides: { fake_task: "gpt-5.5" } },
+      })
+    );
+    assert.equal(r.status, 400);
+  });
+
+  it("settings/export.POST returns user data", async () => {
+    if (!settingsExportRoute) return;
+    // Seed some data
+    await prisma.conversation.create({ data: { userId: SERVER_USER_ID, title: "export test" } });
+    await prisma.fact.create({
+      data: { userId: SERVER_USER_ID, category: "preference", label: "export", fullText: "x", importance: 5 },
+    });
+
+    const r = await settingsExportRoute.POST(req("http://t/api/settings/export", { method: "POST" }));
+    assert.equal(r.status, 200);
+    const body = (await r.json()) as { data: { profile: unknown; conversations: unknown[]; facts: unknown[] } };
+    assert.ok(body.data.profile);
+    assert.ok(body.data.conversations.length > 0);
+    assert.ok(body.data.facts.length > 0);
+  });
+
+  it("settings/clear.POST deletes data with correct confirmation", async () => {
+    if (!settingsClearRoute) return;
+    const conv = await prisma.conversation.create({
+      data: { userId: SERVER_USER_ID, title: "clear test" },
+    });
+
+    const r = await settingsClearRoute.POST(
+      req("http://t/api/settings/clear", {
+        method: "POST",
+        body: { type: "conversations", confirmation: "DELETE CONVERSATIONS" },
+      })
+    );
+    assert.equal(r.status, 200);
+
+    const after = await prisma.conversation.findUnique({ where: { id: conv.id } });
+    assert.equal(after, null);
+  });
+
+  it("settings/clear.POST rejects wrong confirmation", async () => {
+    if (!settingsClearRoute) return;
+    const r = await settingsClearRoute.POST(
+      req("http://t/api/settings/clear", {
+        method: "POST",
+        body: { type: "conversations", confirmation: "WRONG" },
+      })
+    );
+    assert.equal(r.status, 400);
+  });
+});

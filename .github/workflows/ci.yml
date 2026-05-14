@@ -70,7 +70,7 @@ jobs:
           DATABASE_URL: file:./test.db
 
       - name: Run tests
-        run: npm test -- --coverage
+        run: npm run test:coverage
         env:
           DATABASE_URL: file:./test.db
 

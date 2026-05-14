@@ -93,7 +93,28 @@ export async function getMemoryPreamble(
   options?: { categories?: FactCategory[] }
 ): Promise<string> {
   const facts = await fetchFacts(userId, { categories: options?.categories });
-  return buildMemoryPreamble(facts);
+  const profile = await getOrCreateProfile(userId);
+  let identityDocument = "";
+  try {
+    const prefs = JSON.parse(profile.preferencesJson || "{}");
+    if (prefs.identityDocument && typeof prefs.identityDocument === "string") {
+      identityDocument = prefs.identityDocument.trim();
+    }
+  } catch {
+    // ignore malformed json
+  }
+
+  const memoryBlock = buildMemoryPreamble(facts);
+  if (!identityDocument && !memoryBlock) return "";
+
+  let preamble = "";
+  if (identityDocument) {
+    preamble += "\n=== IDENTITY ===\n" + identityDocument + "\n===\n";
+  }
+  if (memoryBlock) {
+    preamble += memoryBlock;
+  }
+  return preamble;
 }
 
 // ── Fact CRUD (repository layer) ──────────────────────────────────────────

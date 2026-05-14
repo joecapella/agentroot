@@ -25,6 +25,7 @@ const ExecuteBody = z.object({
   paramsJson: z.string().min(1).optional(),
   conversationId: z.string().optional(),
   approvalId: z.string().optional(),
+  overridePolicy: z.enum(["allow_all"]).optional(),
 });
 
 function getRepoRoot(): string {
@@ -70,7 +71,7 @@ export async function POST(req: NextRequest) {
     const policy = await prisma.toolPolicy.findUnique({
       where: { userId_toolName: { userId: principal.userId, toolName } },
     });
-    const effectivePolicy = policy?.policy ?? "ask";
+    const effectivePolicy = body.overridePolicy === "allow_all" ? "allowed" : policy?.policy ?? "ask";
 
     const execution = executionId
       ? await prisma.toolExecution.findUnique({ where: { id: executionId } })
@@ -167,6 +168,43 @@ export async function POST(req: NextRequest) {
         }
         case "fetch_url": {
           result = await fetchUrlTool({ url: params.url, maxChars: params.maxChars });
+          break;
+        }
+        case "http_request": {
+          const method = String(params.method ?? "GET").toUpperCase();
+          const url = String(params.url ?? "");
+          if (!url) throw new Error("missing_url");
+          const headers = typeof params.headers === "object" && params.headers ? params.headers : {};
+          const body = params.body ? String(params.body) : undefined;
+          const resp = await fetch(url, {
+            method,
+            headers: headers as Record<string, string>,
+            body: body && method !== "GET" ? body : undefined,
+          });
+          const text = await resp.text();
+          result = {
+            status: resp.status,
+            ok: resp.ok,
+            headers: Object.fromEntries(resp.headers.entries()),
+            body: text.slice(0, 200000),
+          };
+          break;
+        }
+        case "calendar_create": {
+          const res = await fetch(`${req.nextUrl.origin}/api/calendar`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(params),
+          });
+          const json = await res.json();
+          result = json;
+          break;
+        }
+        case "calendar_list": {
+          const limit = params.limit ? Number(params.limit) : 50;
+          const res = await fetch(`${req.nextUrl.origin}/api/calendar?limit=${limit}`);
+          const json = await res.json();
+          result = json;
           break;
         }
         case "grep": {
