@@ -1,0 +1,80 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+requiredVersions:
+    extensions:
+        azure.ai.agents: '>=0.1.0-preview'
+name: foundry-personal-agent
+services:
+    CalculatorAgent:
+        project: src/CalculatorAgent
+        host: azure.ai.agent
+        language: docker
+        config:
+            container:
+                resources:
+                    cpu: "0.25"
+                    memory: 0.5Gi
+            deployments:
+                - model:
+                    format: OpenAI
+                    name: gpt-4o-mini
+                    version: "2024-07-18"
+                  name: gpt-4o-mini
+                  sku:
+                    capacity: 10
+                    name: GlobalStandard
+            startupCommand: python main.py
+    CofounderAgent:
+        project: src/CofounderAgent
+        host: azure.ai.agent
+        language: docker
+        config:
+            container:
+                resources:
+                    cpu: "0.5"
+                    memory: 1Gi
+            deployments:
+                - model:
+                    format: OpenAI
+                    name: gpt-5.5
+                    version: "latest"
+                  name: gpt-5.5
+                  sku:
+                    capacity: 500
+                    name: GlobalStandard
+                - model:
+                    format: OpenAI
+                    name: gpt-4.1
+                    version: "2025-04-14"
+                  name: gpt-4.1
+                  sku:
+                    capacity: 100
+                    name: GlobalStandard
+                - model:
+                    format: OpenAI
+                    name: DeepSeek-V4-Flash
+                    version: "latest"
+                  name: DeepSeek-V4-Flash
+                  sku:
+                    capacity: 200
+                    name: GlobalStandard
+                - model:
+                    format: OpenAI
+                    name: Kimi-K2.6
+                    version: "latest"
+                  name: Kimi-K2.6
+                  sku:
+                    capacity: 100
+                    name: GlobalStandard
+                - model:
+                    format: OpenAI
+                    name: gpt-image-2
+                    version: "latest"
+                  name: gpt-image-2-1
+                  sku:
+                    capacity: 500
+                    name: GlobalStandard
+            startupCommand: python main.py
+infra:
+    provider: bicep
+    path: ./infra

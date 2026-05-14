@@ -1,0 +1,253 @@
+// Prisma schema for CofounderAgent local persistence.
+// SQLite for dev — switch to Postgres for hosted later.
+// SQLite has no native enum support; we model enums as TEXT with CHECK
+// constraints (via @default/values), so this also ports cleanly.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================================================
+// MEMORY LAYER — Phase 1: Persistent identity, facts, project workspaces.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// UserProfile: one row per user — identity, default preferences, and raw JSON
+// for extensibility without schema migrations.
+// ---------------------------------------------------------------------------
+model UserProfile {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  displayName      String   @default("Joseph")
+  email            String?
+  // Default reasoning/tools/persona saved from Settings UI.
+  defaultReasoning String   @default("balanced")
+  defaultTools     String   @default("ask")
+  defaultPersona   String   @default("auto")
+  // Arbitrary key-value config (e.g. preferred editor, OS, timezone).
+  preferencesJson  String   @default("{}")
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Fact: something the agent should remember about the user, a project, or a
+// constraint.  Auto-extracted from chat + manually curated.
+// ---------------------------------------------------------------------------
+model Fact {
+  id           String    @id @default(cuid())
+  userId       String
+  // "preference" | "constraint" | "project_knowledge" | "lesson_learned" | "identity"
+  category     String    @default("preference")
+  // Short label for UI chips (max ~60 chars).
+  label        String
+  // Full text used when injecting into prompts.
+  fullText     String
+  // 1–10. 10 = critically important (used to rank what fits in context).
+  importance   Int       @default(5)
+  // Optional source (conversation id, manual, etc.).
+  source       String?
+  // When this fact stops being auto-injected (null = never).
+  expiresAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId, category])
+  @@index([userId, importance])
+}
+
+// ---------------------------------------------------------------------------
+// ProjectWorkspace: per-project context — goals, pinned paths, status.
+// ---------------------------------------------------------------------------
+model ProjectWorkspace {
+  id              String   @id @default(cuid())
+  userId          String
+  slug            String
+  displayName     String
+  description     String?
+  // Ordered goals as JSON string array.
+  goalsJson       String   @default("[]")
+  // Pinned file/folder paths as JSON string array.
+  pinnedPathsJson String   @default("[]")
+  // Active repo root for this project (file system path).
+  repoRoot        String?
+  // "active" | "paused" | "archived"
+  status          String   @default("active")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([userId, slug])
+  @@index([userId, status])
+}
+
+// ---------------------------------------------------------------------------
+// ToolPolicy: per-user per-tool policy — "autonomous" | "ask" | "readonly" | "blocked"
+// ---------------------------------------------------------------------------
+model ToolPolicy {
+  id        String   @id @default(cuid())
+  userId    String
+  toolName  String
+  policy    String   @default("ask")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, toolName])
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// ToolExecution: audit log of every read_file, run_command, write_file, etc.
+// ---------------------------------------------------------------------------
+model ToolExecution {
+  id          String   @id @default(cuid())
+  userId      String
+  toolName    String
+  // "autonomous" | "approved" | "blocked" | "failed" | "pending"
+  status      String   @default("pending")
+  paramsJson  String
+  resultJson  String?
+  // Error message if failed.
+  error       String?
+  createdAt   DateTime @default(now())
+  completedAt DateTime?
+
+  @@index([userId, toolName])
+  @@index([userId, status])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Approval: explicit human gate before a tool runs.
+// ---------------------------------------------------------------------------
+model Approval {
+  id             String    @id @default(cuid())
+  userId         String
+  toolName       String
+  // Human-readable summary of what will happen.
+  description    String
+  // Full params for inspection.
+  paramsJson     String
+  // "pending" | "approved" | "rejected"
+  status         String    @default("pending")
+  // Link to the ToolExecution row (created when approved).
+  toolExecutionId String?
+  createdAt      DateTime  @default(now())
+  resolvedAt     DateTime?
+
+  @@index([userId, status])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// RetrievalIndex: indexed chunks of repos/docs for semantic/keyword search.
+// ---------------------------------------------------------------------------
+model RetrievalIndex {
+  id          String   @id @default(cuid())
+  userId      String
+  // Source: repo path, obsidian note path, or "manual".
+  source      String
+  // File path or note title.
+  path        String
+  // Which part of the file (line range, heading, etc.)
+  chunkId     String
+  // Extracted text content.
+  content     String
+  // Optional: keywords for BM25-style fast filtering.
+  keywords    String?
+  createdAt   DateTime @default(now())
+
+  @@index([userId, source])
+  @@index([userId, path])
+}
+
+// ---------------------------------------------------------------------------
+// Conversation: a chat thread, tied to a user (single-user for v1).
+// ---------------------------------------------------------------------------
+model Conversation {
+  id             String    @id @default(cuid())
+  userId         String
+  title          String    @default("New conversation")
+  // Optional project tag for per-project filtering in the sidebar.
+  project        String?
+  // Foundry session id for the Responses protocol; reused across turns so
+  // the agent has its own server-side memory.
+  foundrySession String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  lastMessageAt  DateTime  @default(now())
+
+  messages Message[]
+  tasks    Task[]
+
+  @@index([userId, lastMessageAt])
+  @@index([project])
+}
+
+// ---------------------------------------------------------------------------
+// Message: one turn in a Conversation.
+// ---------------------------------------------------------------------------
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String
+  // Stored as TEXT; one of: "user" | "assistant" | "system" | "tool".
+  // (Prisma + SQLite enum portability — see file header.)
+  sender         String
+  // Persona that produced/received this message ("orchestrator", "code_assistant", ...).
+  // Null for user messages without an explicit persona tag.
+  persona        String?
+  // Plain-text content. Optional because some assistant turns are image-only.
+  text           String?
+  // Base64-encoded inline image (e.g. GPT-Image-2 output). Capped in code;
+  // anything large should move to blob storage in a later phase.
+  imageBase64    String?
+  // Raw tool calls / tool outputs for replay & debugging.
+  toolCallsJson  String?
+  // TaskKind chosen by the router for this turn (assistant turns only).
+  taskKind       String?
+  // Logical model name chosen for this turn.
+  modelUsed      String?
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Task: an externally-observable side effect requested by the agent
+// (open_url, create_todo, etc.) and tracked in the Activity panel.
+// ---------------------------------------------------------------------------
+model Task {
+  id             String   @id @default(cuid())
+  // Owner for conversation-less tool tasks. Conversation-attached tasks also
+  // set this for simpler local-only scoping and future hosted auth.
+  userId         String   @default("joseph")
+  conversationId String?
+  messageId      String?
+  // Tool type: "open_url" | "create_todo" | "generate_image" | "future_tool".
+  type           String
+  // Lifecycle: "PENDING" | "AWAITING_APPROVAL" | "IN_PROGRESS" | "COMPLETED" | "FAILED" | "CANCELED".
+  status         String   @default("PENDING")
+  // The tool call's arguments (JSON-serialized).
+  paramsJson     String
+  // The tool's response payload (JSON-serialized) if it returned.
+  resultJson     String?
+  // Free-form note for the Activity panel.
+  summary        String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@index([userId, createdAt])
+  @@index([status])
+}

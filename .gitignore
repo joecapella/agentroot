@@ -1,0 +1,28 @@
+# BOB workspace memory
+.bob/
+.azure
+.venv/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+
+# Prisma local
+prisma/dev.db
+prisma/dev.db-journal
+prisma/test.db
+prisma/test.db-journal
+prisma/migrations/migration_lock.toml.bak
+
+# Env
+.env
+.env.local
+.env.development.local
+.env.production.local
+
+# Misc
+.DS_Store
+*.log

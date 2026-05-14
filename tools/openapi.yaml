@@ -1,0 +1,132 @@
+openapi: 3.1.0
+info:
+  title: CofounderAgent Tool Service (v1 — low-risk surface)
+  version: 0.2.0
+  description: |
+    Tools surfaced to the CofounderAgent. v1 is intentionally minimal —
+    only `open_url` and `create_todo` are wired. Higher-risk tools
+    (run_command, write_file outside repo, screenshot) are explicitly
+    out of scope for v1 and must be designed with the user in the loop
+    before being added.
+
+    `open_url` is a TWO-STEP workflow: the agent (or UI) posts to
+    `/api/tools/open_url`, which creates an AWAITING_APPROVAL Task. The
+    user (or UI on the user's behalf) then posts to
+    `/api/tools/open_url/approve/{taskId}` to actually open the URL on the
+    host. The agent MUST treat the first call as "proposed, not opened" —
+    its prompt is wired that way.
+
+    Authentication: local-only mode. Endpoints do not require login,
+    sessions, bearer tokens, or CSRF headers. Ownership is still derived from
+    the server-side local principal and checked where a conversation/task id is
+    provided.
+servers:
+  - url: http://127.0.0.1:3000
+    description: Local Next.js backend (loopback only by default).
+paths:
+  /api/tools/open_url:
+    post:
+      operationId: open_url
+      summary: Propose opening a URL — creates an AWAITING_APPROVAL Task.
+      description: |
+        Validates the URL (http(s) only) and creates a Task with status
+        `AWAITING_APPROVAL`. **Does not open anything.** A separate approve
+        call is required to actually invoke the host browser.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url]
+              properties:
+                url:
+                  type: string
+                  format: uri
+                reason:
+                  type: string
+                  maxLength: 240
+                conversationId:
+                  type: string
+      responses:
+        "200":
+          description: Task created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  taskId: { type: string }
+                  status:
+                    type: string
+                    enum: [AWAITING_APPROVAL]
+        "400":
+          description: Bad input (e.g. non-http URL).
+        "401":
+          description: Missing/invalid session cookie.
+        "403":
+          description: Missing same-origin marker header.
+        "404":
+          description: Conversation not found / not owned by caller.
+  /api/tools/open_url/approve/{taskId}:
+    post:
+      operationId: open_url_approve
+      summary: Approve a pending open_url Task and execute it on the host.
+      parameters:
+        - in: path
+          name: taskId
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: URL opened (or task already terminal).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  status:
+                    type: string
+                    enum: [COMPLETED, FAILED]
+        "400":
+          description: Task is not an open_url task / malformed params.
+        "401":
+          description: Missing/invalid session cookie.
+        "403":
+          description: Missing same-origin marker header.
+        "404":
+          description: Task not found / not owned by caller.
+  /api/tools/create_todo:
+    post:
+      operationId: create_todo
+      summary: Record a todo as a completed Task row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                  maxLength: 200
+                notes:
+                  type: string
+                  maxLength: 2000
+                due:
+                  type: string
+                  format: date-time
+                conversationId:
+                  type: string
+      responses:
+        "200":
+          description: Todo recorded.
+        "401":
+          description: Missing/invalid session cookie.
+        "403":
+          description: Missing same-origin marker header.
+        "404":
+          description: Conversation not found / not owned by caller.
