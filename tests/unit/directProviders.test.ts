@@ -1,6 +1,18 @@
-import { describe, it } from "node:test";
+import { describe, it, afterEach } from "node:test";
 import assert from "node:assert";
-import { convertInputToMessages, convertCompletionToEnvelope } from "@/src/server/directProviders";
+import {
+  convertCompletionToEnvelope,
+  convertInputToMessages,
+  invokeDirectAnthropic,
+  invokeDirectOpenAI,
+} from "@/src/server/directProviders";
+import type { DeploymentSpec } from "@/src/modelRouting";
+
+const realFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
 
 describe("directProviders", () => {
   describe("convertInputToMessages", () => {
@@ -116,6 +128,137 @@ describe("directProviders", () => {
       });
       assert.strictEqual(env.status, "failed");
       assert.ok(env.error);
+    });
+  });
+
+  describe("invokeDirectOpenAI", () => {
+    it("attaches tool schemas by default and returns a Responses envelope", async () => {
+      let lastBody: Record<string, unknown> | null = null;
+      let lastAuth: string | null = null;
+      globalThis.fetch = (async (input, init) => {
+        lastBody = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
+        const headers = init?.headers as Record<string, string> | Headers | undefined;
+        lastAuth = headers instanceof Headers ? headers.get("Authorization") : headers?.Authorization ?? null;
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-1",
+            object: "chat.completion",
+            created: 1,
+            model: "gpt-4o",
+            choices: [
+              { index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof globalThis.fetch;
+
+      const spec: DeploymentSpec = {
+        deployment: "gpt-4o",
+        family: "direct_openai",
+        baseUrl: "https://example.invalid",
+      };
+      const env = await invokeDirectOpenAI(
+        spec,
+        { input: "hi", instructions: "Be helpful" },
+        { userKey: "key-123" },
+      );
+
+      assert.equal(lastAuth, "Bearer key-123");
+      const body = lastBody as { tools?: unknown[] } | null;
+      assert.ok(Array.isArray(body?.tools));
+      assert.equal(env.status, "completed");
+      assert.equal(env.output[0]?.type, "message");
+    });
+
+    it("throws when provider returns an error object", async () => {
+      globalThis.fetch = (async () => {
+        return new Response(
+          JSON.stringify({
+            id: "chatcmpl-err",
+            object: "chat.completion",
+            created: 1,
+            model: "gpt-4o",
+            choices: [{ index: 0, message: { role: "assistant", content: "" }, finish_reason: "stop" }],
+            error: { message: "bad request", code: "bad_request" },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof globalThis.fetch;
+
+      const spec: DeploymentSpec = {
+        deployment: "gpt-4o",
+        family: "direct_openai",
+        baseUrl: "https://example.invalid",
+      };
+
+      await assert.rejects(
+        () => invokeDirectOpenAI(spec, { input: "hi" }),
+        /Direct provider error: bad_request/,
+      );
+    });
+  });
+
+  describe("invokeDirectAnthropic", () => {
+    it("converts system prompts and tool calls into Responses envelope", async () => {
+      let lastBody: Record<string, unknown> | null = null;
+      globalThis.fetch = (async (_input, init) => {
+        lastBody = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : null;
+        return new Response(
+          JSON.stringify({
+            id: "msg_1",
+            type: "message",
+            role: "assistant",
+            model: "claude-3-5",
+            content: [
+              { type: "text", text: "Hello there" },
+              { type: "tool_use", id: "tool-1", name: "read_file", input: { path: "README.md" } },
+            ],
+            stop_reason: "end",
+            usage: { input_tokens: 10, output_tokens: 5 },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof globalThis.fetch;
+
+      const spec: DeploymentSpec = {
+        deployment: "claude-3-5-sonnet-20241022",
+        family: "direct_anthropic",
+        baseUrl: "https://api.anthropic.com/v1",
+      };
+      const env = await invokeDirectAnthropic(
+        spec,
+        {
+          input: [
+            { role: "developer", content: "System A" },
+            { role: "system", content: "System B" } as unknown as { role: "developer"; content: string },
+            { type: "function_call_output", call_id: "call-1", output: "tool ok" },
+            { role: "user", content: "Hello" },
+          ],
+          instructions: "Fallback system",
+        },
+        { userKey: "anthropic-key" },
+      );
+
+      const body = lastBody as { system?: string; messages?: Array<{ role: string; content: string }> } | null;
+      assert.equal(body?.system, "System A\n\nSystem B");
+      const messages = body?.messages ?? [];
+      assert.ok(messages[0].content.includes("tool_result"));
+      assert.equal(env.output[0].type, "message");
+      const toolCall = env.output.find((item) => item.type === "function_call");
+      assert.ok(toolCall);
+    });
+
+    it("requires an API key", async () => {
+      const spec: DeploymentSpec = {
+        deployment: "claude-3-5-sonnet-20241022",
+        family: "direct_anthropic",
+        baseUrl: "https://api.anthropic.com/v1",
+      };
+      await assert.rejects(
+        () => invokeDirectAnthropic(spec, { input: "hi" }),
+        /anthropic_missing_api_key/,
+      );
     });
   });
 });
