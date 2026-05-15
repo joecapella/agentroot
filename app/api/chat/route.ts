@@ -124,6 +124,7 @@ export async function POST(req: NextRequest) {
   let effectivePersona: Persona;
   let route: DeploymentSpec;
   let memoryPreamble: string | null;
+  let effectiveKeys: UserKeys;
   try {
     conv = parsed.conversationId
       ? await prisma.conversation.findUnique({ where: { id: parsed.conversationId } })
@@ -170,7 +171,7 @@ export async function POST(req: NextRequest) {
     // ONLY when no server key exists for that provider.
     const serverKeys: UserKeys = await getEffectiveUserKeys(principal.userId);
     const bodyKeys: UserKeys = (parsed.userKeys ?? {}) as UserKeys;
-    const effectiveKeys: UserKeys = {
+    effectiveKeys = {
       openai: serverKeys.openai ?? bodyKeys.openai,
       anthropic: serverKeys.anthropic ?? bodyKeys.anthropic,
       gemini: serverKeys.gemini ?? bodyKeys.gemini,
@@ -251,7 +252,7 @@ export async function POST(req: NextRequest) {
             route,
             send,
             userId: principal.userId,
-            userKeys: parsed.userKeys ?? undefined,
+            userKeys: effectiveKeys,
           });
           // NOTE: do NOT close the controller here. The outer `finally`
           // block at the bottom of this stream calls controller.close()
