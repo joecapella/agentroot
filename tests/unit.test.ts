@@ -17,6 +17,7 @@ import { isValidResponseId, resolveEndpoint, flattenEnvelope } from "@/src/found
 import {
   inferTaskKind,
   LOGICAL_DEPLOYMENTS,
+  personaForTask,
   pickChatModelForTask,
   resolveRouteForTaskWithOverrides,
   pickChatModelForTaskWithOverrides,
@@ -91,6 +92,10 @@ describe("inferTaskKind regex tightening (Bug-7)", () => {
     );
     assert.equal(inferTaskKind("draw an illustration of a fox"), "visual");
   });
+  it("routes visual noun bigrams to visual even without verbs", () => {
+    assert.equal(inferTaskKind("Need a product mockup for the deck"), "visual");
+    assert.equal(inferTaskKind("The album cover should feel nostalgic"), "visual");
+  });
   it("DOES route explicit code asks to code", () => {
     const k = inferTaskKind("refactor this typescript file");
     assert.ok(k === "code_repo" || k === "code_file");
@@ -102,6 +107,23 @@ describe("inferTaskKind regex tightening (Bug-7)", () => {
   it("DOES route OCR-style asks to vision", () => {
     assert.equal(inferTaskKind("what do you see in this image"), "vision");
     assert.equal(inferTaskKind("ocr this screenshot"), "vision");
+  });
+  it("respects persona defaults when no visual generation is present", () => {
+    assert.equal(inferTaskKind("hello there", { persona: "ops" }), "personal_ops");
+    assert.equal(
+      inferTaskKind("something else", { persona: "brand_designer" }),
+      "brand_strategy"
+    );
+  });
+  it("keeps visual generation above persona defaults", () => {
+    assert.equal(
+      inferTaskKind("generate a logo mockup", { persona: "ops" }),
+      "visual"
+    );
+  });
+  it("uses reasoning profiles when the content is generic", () => {
+    assert.equal(inferTaskKind("hello", { reasoning: "deep" }), "deep_planning");
+    assert.equal(inferTaskKind("hello", { reasoning: "fast" }), "fast_brainstorm");
   });
 });
 
@@ -126,6 +148,49 @@ describe("pickChatModelForTask (Bug-9)", () => {
         `task ${t} resolved to non-chat family ${spec.family} (${spec.deployment})`
       );
     }
+  });
+});
+
+describe("task overrides and persona mapping", () => {
+  it("resolveRouteForTaskWithOverrides honors available overrides", () => {
+    const spec = resolveRouteForTaskWithOverrides("general_chat", {
+      general_chat: "deepseek-v4-flash",
+    });
+    assert.equal(
+      spec.deployment,
+      LOGICAL_DEPLOYMENTS["deepseek-v4-flash"].deployment
+    );
+  });
+
+  it("resolveRouteForTaskWithOverrides falls back when override is unavailable", () => {
+    const spec = resolveRouteForTaskWithOverrides("general_chat", {
+      general_chat: "claude-opus-4-7",
+    });
+    assert.equal(spec.deployment, LOGICAL_DEPLOYMENTS["gpt-5.5"].deployment);
+  });
+
+  it("pickChatModelForTaskWithOverrides prefers chat-capable overrides", () => {
+    const spec = pickChatModelForTaskWithOverrides("general_chat", {
+      general_chat: "gemini-flash",
+    });
+    assert.equal(spec.deployment, LOGICAL_DEPLOYMENTS["gemini-flash"].deployment);
+    assert.equal(spec.family, "direct_openai");
+  });
+
+  it("pickChatModelForTaskWithOverrides skips non-chat overrides", () => {
+    const spec = pickChatModelForTaskWithOverrides("general_chat", {
+      general_chat: "gpt-image-2",
+    });
+    assert.equal(spec.family, "azure_openai");
+    assert.equal(spec.deployment, LOGICAL_DEPLOYMENTS["gpt-5.5"].deployment);
+  });
+
+  it("maps task kinds to personas", () => {
+    assert.equal(personaForTask("code_repo"), "code_assistant");
+    assert.equal(personaForTask("brand_strategy"), "brand_designer");
+    assert.equal(personaForTask("personal_ops"), "ops");
+    assert.equal(personaForTask("vision"), "vision");
+    assert.equal(personaForTask("general_chat"), "orchestrator");
   });
 });
 
