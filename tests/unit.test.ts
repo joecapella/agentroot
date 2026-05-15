@@ -62,6 +62,22 @@ describe("resolveEndpoint (agent-name fail-fast)", () => {
     process.env[ENV_KEY] = SAVED;
   });
 
+  it("throws on invalid endpoint URL", () => {
+    process.env[ENV_KEY] = "not-a-url";
+    assert.throws(() => resolveEndpoint("TestAgent"), /agent_endpoint_invalid_url/);
+    process.env[ENV_KEY] = SAVED;
+  });
+
+  it("throws when /agents/<name>/ segment is missing", () => {
+    process.env[ENV_KEY] =
+      "https://example.invalid/api/projects/test/endpoint/protocols/openai/responses?api-version=2025-11-15-preview";
+    assert.throws(
+      () => resolveEndpoint("TestAgent"),
+      /agent_endpoint_no_agents_segment/
+    );
+    process.env[ENV_KEY] = SAVED;
+  });
+
   it("falls back to constructed URL when no direct env var set", () => {
     delete process.env[ENV_KEY];
     const url = resolveEndpoint("TestAgent");
