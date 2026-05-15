@@ -27,6 +27,7 @@ import {
 } from "@/src/server/auth";
 import { runRoute, sanitizedError } from "@/src/server/errors";
 import { getMemoryPreamble, createFact, getOrCreateProfile } from "@/src/memory";
+import { getEffectiveUserKeys } from "@/src/server/byokKeys";
 import { extractAndStripFacts } from "@/src/server/factExtractor";
 import { runReActLoop, type LoopEvent } from "@/src/server/agentLoop";
 import { recordTokenUsage } from "@/src/server/tokenTracker";
@@ -159,12 +160,34 @@ export async function POST(req: NextRequest) {
       // ignore malformed json
     }
 
-    // BYOK routing: if the request carries a user-supplied provider key,
-    // route directly to that provider with the user's key. Otherwise
-    // fall back to the default Foundry-hosted path. Keys live in the
-    // browser's localStorage and are sent per-request; the server NEVER
-    // persists them.
-    const byok = pickByokChatModel(parsed.userKeys ?? null, taskKind);
+    // BYOK routing — canonical source is the encrypted UserSecret table.
+    //
+    // The /api/chat body still accepts `userKeys` for backward
+    // compatibility, but the server-side stored keys win on conflict.
+    // The browser path (ApiKeysSection + apiClient) no longer sends
+    // body userKeys, so in practice this always equals the server-side
+    // result.  Legacy localStorage callers will see their keys override
+    // ONLY when no server key exists for that provider.
+    const serverKeys: UserKeys = await getEffectiveUserKeys(principal.userId);
+    const bodyKeys: UserKeys = (parsed.userKeys ?? {}) as UserKeys;
+    const effectiveKeys: UserKeys = {
+      openai: serverKeys.openai ?? bodyKeys.openai,
+      anthropic: serverKeys.anthropic ?? bodyKeys.anthropic,
+      gemini: serverKeys.gemini ?? bodyKeys.gemini,
+    };
+    if (
+      (bodyKeys.openai && serverKeys.openai && bodyKeys.openai !== serverKeys.openai) ||
+      (bodyKeys.anthropic && serverKeys.anthropic && bodyKeys.anthropic !== serverKeys.anthropic) ||
+      (bodyKeys.gemini && serverKeys.gemini && bodyKeys.gemini !== serverKeys.gemini)
+    ) {
+      // Defense in depth — if a client somehow sends a different key than
+      // what's stored, prefer the stored one and audit the mismatch.
+      console.warn(
+        "[chat] BYOK body/server key mismatch user=%s — using server-side key",
+        principal.userId,
+      );
+    }
+    const byok = pickByokChatModel(effectiveKeys, taskKind);
     route = byok ?? pickChatModelForTaskWithOverrides(taskKind, routingOverrides);
     // Hot-loaded persona prompt + memory preamble.
     //
@@ -252,9 +275,10 @@ export async function POST(req: NextRequest) {
           imageQuality: imageQuality ?? "auto",
           imageSize: imageSize ?? "auto",
           memoryPreamble: memoryPreamble ?? undefined,
-          // BYOK per-request keys. Forwarded to invokeLLM and
-          // generateImages inside the loop; never persisted.
-          userKeys: parsed.userKeys ?? undefined,
+          // BYOK keys, server-resolved from encrypted UserSecret rows.
+          // Forwarded to invokeLLM and generateImages inside the loop;
+          // never persisted further.
+          userKeys: effectiveKeys,
           onEvent: async (event: LoopEvent) => {
             send(event.type, event.data);
           },
